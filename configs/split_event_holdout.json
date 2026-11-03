@@ -1,0 +1,16 @@
+{
+  "name": "split_event_holdout",
+  "tile_size": 256,
+  "stride": 256,
+  "val_events": [
+    "Ghana"
+  ],
+  "test_events": [
+    "Bolivia"
+  ],
+  "seed": 1337,
+  "bands": [
+    "VV",
+    "VH"
+  ]
+}
