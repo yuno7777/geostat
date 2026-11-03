@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GeoStat — Satellite Flood Mapping & Infrastructure Exposure</title>
+  <link rel="stylesheet" href="vendor/maplibre-gl.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="logo-title">
+        <span class="icon">🛰️</span>
+        <div>
+          <h1>GeoStat</h1>
+          <p class="tagline">Sentinel-1 Flood Extent & Infrastructure Exposure</p>
+        </div>
+      </div>
+      <div class="status-badge" id="statusBadge">
+        <span class="dot"></span>
+        <span id="statusText">Connecting...</span>
+      </div>
+    </header>
+
+    <div class="main-container">
+      <aside class="sidebar">
+        <!-- Scene Selection -->
+        <section class="panel">
+          <h2>Select Target Scene</h2>
+          <div class="form-group">
+            <label for="sceneSelect">Scene</label>
+            <select id="sceneSelect">
+              <option value="">Loading scenes...</option>
+            </select>
+          </div>
+          <div id="sceneMeta" class="meta-box hidden">
+            <div><strong>Event / Country:</strong> <span id="metaEvent">-</span></div>
+            <div><strong>Acquired Date:</strong> <span id="metaDate">-</span></div>
+            <div><strong>Official Split:</strong> <span id="metaSplit">-</span></div>
+            <div><strong>Bounding Box:</strong> <span id="metaBbox">-</span></div>
+          </div>
+        </section>
+
+        <!-- Layer Toggles -->
+        <section class="panel">
+          <h2>Map Layers</h2>
+          <div class="layer-item">
+            <label>
+              <input type="checkbox" id="layerFlood" checked>
+              <span class="swatch flood-swatch"></span>
+              Predicted Flood (U-Net)
+            </label>
+          </div>
+          <div class="layer-item">
+            <label>
+              <input type="checkbox" id="layerReference" checked>
+              <span class="swatch ref-swatch"></span>
+              Reference Label (Hand-annotated)
+            </label>
+          </div>
+          <div class="layer-item">
+            <label>
+              <input type="checkbox" id="layerRoads" checked>
+              <span class="swatch roads-swatch"></span>
+              OSM Roads (Red = Flooded)
+            </label>
+          </div>
+          <div class="layer-item">
+            <label>
+              <input type="checkbox" id="layerBuildings" checked>
+              <span class="swatch buildings-swatch"></span>
+              OSM Buildings (Red = Flooded)
+            </label>
+          </div>
+        </section>
+
+        <!-- Evaluation Metrics -->
+        <section class="panel">
+          <h2>Reference Evaluation</h2>
+          <div id="metricsContent">
+            <p class="muted">No analysis selected.</p>
+          </div>
+        </section>
+
+        <!-- Infrastructure Exposure -->
+        <section class="panel">
+          <h2>Infrastructure Exposure</h2>
+          <div id="exposureContent">
+            <p class="muted">No exposure calculated.</p>
+          </div>
+        </section>
+
+        <!-- Artifacts -->
+        <section class="panel">
+          <h2>Artifacts</h2>
+          <div id="artifactsContent">
+            <p class="muted">No artifacts available.</p>
+          </div>
+        </section>
+
+        <footer class="sidebar-footer">
+          <small>Model output represents detected surface water, not operational flood forecasts. Data: Sen1Floods11 &copy; Cloud to Street; &copy; OpenStreetMap contributors (ODbL 1.0).</small>
+        </footer>
+      </aside>
+
+      <main class="map-container">
+        <div id="map"></div>
+        <div id="mapOverlay" class="map-overlay hidden">
+          <div class="spinner"></div>
+          <span id="overlayText">Loading layers...</span>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="vendor/maplibre-gl.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
