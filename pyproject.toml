@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "geostat"
+version = "0.1.0"
+description = "GeoStat - reproducible satellite flood mapping and infrastructure exposure analysis"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "GeoStat" }]
+dependencies = [
+  "numpy>=1.26,<2.3",
+  "rasterio>=1.4,<1.5",
+  "pyproj>=3.6,<4",
+  "shapely>=2.0,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "pydantic>=2.7,<3",
+  "pillow>=10,<12",
+  "matplotlib>=3.8,<4",
+  "torch>=2.6,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "httpx>=0.27,<1",
+]
+
+[project.scripts]
+geostat = "geostat.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/geostat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "integration: tests that need downloaded data (opt-in)",
+  "gpu: tests that require a CUDA GPU",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
