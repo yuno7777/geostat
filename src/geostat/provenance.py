@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import geostat.settings as settings
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sha256_hex(path: Path) -> str:
@@ -23,7 +25,7 @@ def sha256_hex(path: Path) -> str:
 
 
 def md5_hex(path: Path) -> str:
-    h = hashlib.md5()
+    h = hashlib.md5(usedforsecurity=False)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
@@ -32,6 +34,7 @@ def md5_hex(path: Path) -> str:
 
 def md5_b64(path: Path) -> str:
     import base64
+
     return base64.b64encode(bytes.fromhex(md5_hex(path))).decode()
 
 
@@ -48,9 +51,9 @@ def _source_files(root: Path | None = None) -> list[Path]:
     return sorted(set(files))
 
 
-def code_revision(root: Path | None = None) -> dict:
+def code_revision(root: Path | None = None) -> dict[str, Any]:
     root = root or settings.PROJECT_ROOT
-    info: dict = {}
+    info: dict[str, Any] = {}
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=10
@@ -76,6 +79,7 @@ def code_revision(root: Path | None = None) -> dict:
 def _ram_gb() -> float | None:
     try:
         import ctypes
+
         class MEMORYSTATUSEX(ctypes.Structure):
             _fields_ = [
                 ("dwLength", ctypes.c_ulong),
@@ -88,31 +92,33 @@ def _ram_gb() -> float | None:
                 ("ullAvailVirtual", ctypes.c_ulonglong),
                 ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
             ]
+
         stat = MEMORYSTATUSEX()
         stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return round(stat.ullTotalPhys / (1024 ** 3), 2)
+        if not vars(ctypes)["WinDLL"]("kernel32").GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return None
+        return round(int(stat.ullTotalPhys) / (1024**3), 2)
     except Exception:
         return None
 
 
 def _ram_gb_posix() -> float | None:
     try:
-        return round(open("/proc/meminfo").readline().split()[1] and 0)
+        return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / (1024**3), 2)
     except Exception:
         return None
 
 
-def environment_snapshot() -> dict:
+def environment_snapshot() -> dict[str, Any]:
     import os
 
-    env: dict = {
+    env: dict[str, Any] = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "machine": platform.machine(),
         "cpu": platform.processor() or "unknown",
         "cpu_cores": os.cpu_count(),
-        "ram_gb": _ram_gb(),
+        "ram_gb": _ram_gb() if os.name == "nt" else _ram_gb_posix(),
         "gdal": _gdal_version(),
         "torch": _torch_version(),
     }
@@ -123,12 +129,12 @@ def _gdal_version() -> str:
     try:
         import rasterio
 
-        return rasterio.__gdal_version__
+        return str(rasterio.__gdal_version__)
     except Exception:
         return "unknown"
 
 
-def _torch_version() -> dict:
+def _torch_version() -> dict[str, Any]:
     try:
         import torch
 

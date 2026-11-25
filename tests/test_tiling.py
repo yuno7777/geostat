@@ -46,9 +46,18 @@ def test_scene_tiles_calculation():
 def test_split_disjointness():
     cfg = TilingConfig(name="test", val_events=["Ghana"], test_events=["Bolivia"])
     meta = geoio.RasterMeta(
-        path="dummy.tif", crs="EPSG:4326", width=256, height=256, band_count=2,
-        dtype="float32", nodata=float("nan"), has_nan_nodata=True, resolution_x=1,
-        resolution_y=1, transform=(1, 0, 0, 0, -1, 0), bounds=(0, -256, 256, 0)
+        path="dummy.tif",
+        crs="EPSG:4326",
+        width=256,
+        height=256,
+        band_count=2,
+        dtype="float32",
+        nodata=float("nan"),
+        has_nan_nodata=True,
+        resolution_x=0.01,
+        resolution_y=0.01,
+        transform=(0.01, 0, 0, 0, -0.01, 0),
+        bounds=(0, -2.56, 2.56, 0),
     )
     scenes = [
         {"id": "Bolivia_101", "event": "Bolivia", "meta": meta},
@@ -68,9 +77,18 @@ def test_split_disjointness():
 def test_manifest_sha_is_stable():
     cfg = TilingConfig(name="test", val_events=["Ghana"], test_events=["Bolivia"])
     meta = geoio.RasterMeta(
-        path="dummy.tif", crs="EPSG:4326", width=256, height=256, band_count=2,
-        dtype="float32", nodata=float("nan"), has_nan_nodata=True, resolution_x=1,
-        resolution_y=1, transform=(1, 0, 0, 0, -1, 0), bounds=(0, -256, 256, 0)
+        path="dummy.tif",
+        crs="EPSG:4326",
+        width=256,
+        height=256,
+        band_count=2,
+        dtype="float32",
+        nodata=float("nan"),
+        has_nan_nodata=True,
+        resolution_x=0.01,
+        resolution_y=0.01,
+        transform=(0.01, 0, 0, 0, -0.01, 0),
+        bounds=(0, -2.56, 2.56, 0),
     )
     scenes = [{"id": "Bolivia_101", "event": "Bolivia", "meta": meta}]
     m1 = build_manifest(cfg, scenes, code_revision={"source_tree_sha256": "dummy"})

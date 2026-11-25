@@ -8,10 +8,13 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import geostat.settings as settings
-from geostat.provenance import md5_b64, sha256_hex, utcnow
+from geostat.geoio import save_json as json_write
+from geostat.provenance import md5_hex as md5_file
+from geostat.provenance import sha256_hex, utcnow
 
 USER_AGENT = "GeoStat/0.1 (research; contact via GitHub repo)"
 
@@ -22,7 +25,11 @@ HASH_CHUNK = 1 << 20
 
 
 def list_prefix(prefix: str, *, with_md5: bool = False) -> list[dict[str, Any]]:
-    q_base: dict[str, Any] = {"prefix": prefix, "maxResults": 1000, "fields": "items(name,size,md5Hash),nextPageToken"}
+    q_base: dict[str, Any] = {
+        "prefix": prefix,
+        "maxResults": 1000,
+        "fields": "items(name,size,md5Hash),nextPageToken",
+    }
     out: list[dict[str, Any]] = []
     token: str | None = None
     while True:
@@ -44,37 +51,24 @@ def list_prefix(prefix: str, *, with_md5: bool = False) -> list[dict[str, Any]]:
     return out
 
 
-def md5_file(path: Path) -> str:
-    h = hashlib_md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(HASH_CHUNK), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def hashlib_md5():
-    import hashlib
-
-    return hashlib.md5()  # noqa: S324 - used only for integrity checks, not security
-
-
 def _download_once(url: str, dest: Path) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=300) as resp:  # noqa: S310 - fixed https origin hardcoded
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        with open(tmp, "wb") as f:
-            while True:
-                chunk = resp.read(HASH_CHUNK)
-                if not chunk:
-                    break
+        with dest.open("wb") as f:
+            while chunk := resp.read(HASH_CHUNK):
                 f.write(chunk)
-        tmp.replace(dest)
 
 
-def download_file(object_name: str, dest: Path, expected_md5_hex: str | None, expected_size: int | None) -> dict[str, Any]:
+def download_file(
+    object_name: str, dest: Path, expected_md5_hex: str | None, expected_size: int | None
+) -> dict[str, Any]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     got = ""
-    if dest.exists() and dest.stat().st_size > 0 and (expected_size is None or dest.stat().st_size == expected_size):
+    if (
+        dest.exists()
+        and dest.stat().st_size > 0
+        and (expected_size is None or dest.stat().st_size == expected_size)
+    ):
         got = md5_file(dest)
         if expected_md5_hex is None or got == expected_md5_hex:
             return {
@@ -85,24 +79,30 @@ def download_file(object_name: str, dest: Path, expected_md5_hex: str | None, ex
                 "md5_hex": got,
                 "cached": True,
             }
-        dest.unlink(missing_ok=True)
     url = f"{settings.GCS_PUBLIC_URL}/{settings.DATASET_NAME}/{object_name}"
     last: Exception | None = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):
+        with NamedTemporaryFile(dir=dest.parent, suffix=".part", delete=False) as tmp:
+            candidate = Path(tmp.name)
         try:
-            _download_once(url, dest)
-            got = md5_file(dest)
+            _download_once(url, candidate)
+            got = md5_file(candidate)
+            size = candidate.stat().st_size
             if expected_md5_hex is not None and got != expected_md5_hex:
-                dest.unlink(missing_ok=True)
-                raise IOError(f"md5 mismatch for {object_name}: expected {expected_md5_hex}, got {got}")
-            if expected_size is not None and dest.stat().st_size != expected_size:
-                dest.unlink(missing_ok=True)
-                raise IOError(f"size mismatch for {object_name}: expected {expected_size}, got {dest.stat().st_size}")
+                raise OSError(
+                    f"md5 mismatch for {object_name}: expected {expected_md5_hex}, got {got}"
+                )
+            if not size or (expected_size is not None and size != expected_size):
+                raise OSError(
+                    f"size mismatch for {object_name}: expected {expected_size}, got {size}"
+                )
+            digest = sha256_hex(candidate)
+            candidate.replace(dest)
             return {
                 "name": object_name,
                 "path": str(dest),
-                "size": dest.stat().st_size,
-                "sha256": sha256_hex(dest),
+                "size": size,
+                "sha256": digest,
                 "md5_hex": got,
                 "cached": False,
             }
@@ -110,7 +110,9 @@ def download_file(object_name: str, dest: Path, expected_md5_hex: str | None, ex
             last = exc
             if attempt < RETRY_ATTEMPTS:
                 time.sleep(RETRY_SLEEP_S * attempt)
-    raise IOError(f"download failed after {RETRY_ATTEMPTS} attempts: {object_name}: {last}")
+        finally:
+            candidate.unlink(missing_ok=True)
+    raise OSError(f"download failed after {RETRY_ATTEMPTS} attempts: {object_name}: {last}")
 
 
 def _chip_layer_object(chip_id: str, layer: str) -> str:
@@ -129,7 +131,13 @@ def download_reference() -> dict[str, Any]:
         dest = settings.REFERENCE_DIR / leaf
         info = download_file(obj, dest, None, None)
         files.append(info)
-    manifest = {"schema": "geostat.reference-manifest/1", "retrieved_at": utcnow(), "dataset": settings.DATASET_NAME, "dataset_version": settings.DATASET_VERSION, "files": files}
+    manifest = {
+        "schema": "geostat.reference-manifest/1",
+        "retrieved_at": utcnow(),
+        "dataset": settings.DATASET_NAME,
+        "dataset_version": settings.DATASET_VERSION,
+        "files": files,
+    }
     settings.ensure_dirs()
     json_write(settings.REFERENCE_DIR / "MANIFEST.json", manifest)
     return manifest
@@ -151,16 +159,26 @@ def _fetch_layers(chip_ids: list[str]) -> dict[str, Any]:
     by_name = {p["name"].split("/")[-1]: p for p in full_listing}
     base = settings.RAW_DIR / settings.DATASET_NAME / settings.DATASET_VERSION
     jobs: list[tuple[str, Path, str | None, int]] = []
-    for chip in chip_ids:
+    for chip in dict.fromkeys(chip_ids):
+        settings.path_component(chip, "chip")
         for layer in ("S1", "Label"):
             stem = f"{chip}_{layer}Hand.tif"
             meta = by_name.get(stem)
             if meta is None:
                 raise FileNotFoundError(f"{stem} not listed in the {settings.DATASET_NAME} bucket")
-            jobs.append((_chip_layer_object(chip, layer), _chip_layer_path(chip, layer, base), meta.get("md5_hex"), meta["size"]))
+            jobs.append(
+                (
+                    _chip_layer_object(chip, layer),
+                    _chip_layer_path(chip, layer, base),
+                    meta.get("md5_hex"),
+                    meta["size"],
+                )
+            )
     files: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = [pool.submit(download_file, obj, dest, exp, size) for obj, dest, exp, size in jobs]
+        futures = [
+            pool.submit(download_file, obj, dest, exp, size) for obj, dest, exp, size in jobs
+        ]
         for fut in as_completed(futures):
             files.append(fut.result())
     files.sort(key=lambda d: d["name"])
@@ -175,9 +193,3 @@ def _fetch_layers(chip_ids: list[str]) -> dict[str, Any]:
     }
     json_write(base / "MANIFEST.json", manifest)
     return manifest
-
-
-def json_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, sort_keys=True, separators=(",", ":"), indent=None, ensure_ascii=False)

@@ -119,11 +119,20 @@ document.addEventListener("DOMContentLoaded", () => {
     metaSplit.textContent = currentScene.official_split || "None";
     
     // Zoom/Bounds
-    let s1 = currentScene.s1_asset_id;
-    if (s1 && s1.minx !== undefined) {
-      const bounds = [[s1.minx, s1.miny], [s1.maxx, s1.maxy]];
-      metaBbox.textContent = `[${s1.minx.toFixed(3)}, ${s1.miny.toFixed(3)}, ${s1.maxx.toFixed(3)}, ${s1.maxy.toFixed(3)}]`;
-      map.fitBounds(bounds, { padding: 40 });
+    const viewScene = sceneId;
+    metaBbox.textContent = "Unknown";
+    try {
+      const response = await fetch(`/api/scenes/${encodeURIComponent(sceneId)}`);
+      const scene = response.ok ? await response.json() : null;
+      if (currentScene?.id !== viewScene) return;
+      const bbox = scene?.s1_asset_id?.bbox_wgs84;
+      if (bbox) {
+        const [west, south, east, north] = bbox;
+        metaBbox.textContent = `[${bbox.map(value => value.toFixed(3)).join(", ")}]`;
+        map.fitBounds([[west, south], [east < west ? east + 360 : east, north]], { padding: 40 });
+      }
+    } catch {
+      if (currentScene?.id !== viewScene) return;
     }
 
     showLoading("Loading scene layers & analysis...");

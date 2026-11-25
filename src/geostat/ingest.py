@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
-from typing import Any, Optional
-
-import numpy as np
+from typing import Any
 
 import geostat.settings as settings
-from geostat import db, download, geoio
+from geostat import db, geoio
 from geostat.provenance import sha256_hex
+from geostat.spatial import bounds_wgs84
 
 STUDY_AREA_ID = f"{settings.DATASET_NAME}-{settings.DATASET_VERSION}"
 LABEL_LICENSE = "research-use; cite Bonafilia et al. 2020 (no explicit LICENSE file upstream)"
@@ -20,12 +20,12 @@ def chip_event(chip_id: str) -> str:
     return chip_id.split("_")[0]
 
 
-def _event_date(metadata_by_event: dict[str, Any], event: str) -> Optional[str]:
+def _event_date(metadata_by_event: dict[str, Any], event: str) -> str | None:
     canonical = settings.EVENT_DATE_MAP.get(event, event)
     return metadata_by_event.get(canonical)
 
 
-def _official_split(path: Path, scene_id: str) -> Optional[str]:
+def _official_split(path: Path, scene_id: str) -> str | None:
     split_files = {
         "train": "flood_train_data.csv",
         "valid": "flood_valid_data.csv",
@@ -34,7 +34,7 @@ def _official_split(path: Path, scene_id: str) -> Optional[str]:
     for key, fname in split_files.items():
         f = path / fname
         if f.exists():
-            with open(f, "r", encoding="utf-8") as fh:
+            with open(f, encoding="utf-8") as fh:
                 for line in fh:
                     if not line.strip():
                         continue
@@ -57,7 +57,14 @@ def load_metadata_by_event() -> dict[str, Any]:
     return metadata_by_event
 
 
-def ingest_dataset(conn, run, *, sample: bool, chip_ids: Optional[list[str]] = None, overwrite: bool = False) -> dict:
+def ingest_dataset(
+    conn: sqlite3.Connection,
+    run: db.RunCtx,
+    *,
+    sample: bool,
+    chip_ids: list[str] | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
     metadata_by_event = load_metadata_by_event()
     base = settings.RAW_DIR / settings.DATASET_NAME / settings.DATASET_VERSION
     manifest_path = base / "MANIFEST.json"
@@ -65,7 +72,7 @@ def ingest_dataset(conn, run, *, sample: bool, chip_ids: Optional[list[str]] = N
         raise FileNotFoundError(
             f"no dataset manifest found at {manifest_path}; run: geostat download --mode sample|all first"
         )
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
 
     rows_by_path = {}
@@ -81,6 +88,7 @@ def ingest_dataset(conn, run, *, sample: bool, chip_ids: Optional[list[str]] = N
         )
     n_valid = 0
     for chip in chip_ids_provided:
+        settings.path_component(chip, "chip")
         s1_path = base / "S1Hand" / f"{chip}_S1Hand.tif"
         label_path = base / "LabelHand" / f"{chip}_LabelHand.tif"
         if not s1_path.exists() or not label_path.exists():
@@ -92,16 +100,19 @@ def ingest_dataset(conn, run, *, sample: bool, chip_ids: Optional[list[str]] = N
         report = geoio.assert_alignment(meta_s1, meta_label)
         if not report["aligned"]:
             run.log(json.dumps(report), level="error")
-            raise geoio.GeoError(f"raster/label misalignment for scene {chip}: {report['problems']}")
+            raise geoio.GeoError(
+                f"raster/label misalignment for scene {chip}: {report['problems']}"
+            )
         counts = geoio.label_value_counts(label_path)
-        invalid_label_values = [v for v in counts if v not in ("0", "1")]
-        if "-1" not in counts and invalid_label_values:
-            run.log(f"label for {chip} has values outside the -1/0/1 contract: {counts}", level="warn")
-        elif invalid_label_values and int(invalid_label_values[0]) != -1:
-            raise geoio.GeoError(f"label for {chip} contains unexpected values {invalid_label_values}")
-        valid_frac_, water_frac_ = geoio.water_fracs(geoio.labels(label_path))
-        s1_arr = geoio.read_window(s1_path, 0, 0, meta_s1.height, meta_s1.width)
-        nan_frac_s1 = float(np.mean(np.all(~np.isfinite(s1_arr), axis=0))) if s1_arr.ndim == 3 else float(np.mean(~np.isfinite(s1_arr)))
+        unknown_labels = counts.keys() - {"-1", "0", "1"}
+        if unknown_labels:
+            raise geoio.GeoError(
+                f"label for {chip} contains unexpected values {sorted(unknown_labels)}"
+            )
+        valid_pixels = counts.get("0", 0) + counts.get("1", 0)
+        valid_frac_ = valid_pixels / (meta_label.width * meta_label.height)
+        water_frac_ = counts.get("1", 0) / valid_pixels if valid_pixels else 0.0
+        nan_frac_s1 = geoio.missing_sar_fraction(s1_path)
         run.log(
             "alignment ok "
             + f"crs={meta_s1.crs} size={meta_s1.width}x{meta_s1.height} "
@@ -127,7 +138,9 @@ def ingest_dataset(conn, run, *, sample: bool, chip_ids: Optional[list[str]] = N
             height=meta_s1.height,
             band_count=meta_s1.band_count,
             dtype=meta_s1.dtype,
-            nodata="nan" if meta_s1.has_nan_nodata else (str(meta_s1.nodata) if meta_s1.nodata is not None else None),
+            nodata="nan"
+            if meta_s1.has_nan_nodata
+            else (str(meta_s1.nodata) if meta_s1.nodata is not None else None),
             resolution_x=meta_s1.resolution_x,
             resolution_y=meta_s1.resolution_y,
             minx=meta_s1.bounds[0],
@@ -167,13 +180,22 @@ def ingest_dataset(conn, run, *, sample: bool, chip_ids: Optional[list[str]] = N
             maxx=meta_label.bounds[2],
             maxy=meta_label.bounds[3],
             acquired_at=_event_date(metadata_by_event, chip_event(chip)),
-            meta={"label_value_counts": counts, "valid_frac_label": valid_frac_, "water_frac_label": water_frac_},
+            meta={
+                "label_value_counts": counts,
+                "valid_frac_label": valid_frac_,
+                "water_frac_label": water_frac_,
+            },
         )
-        if conn.execute("SELECT 1 FROM study_areas WHERE id = ?", (STUDY_AREA_ID,)).fetchone() is None:
-            db.upsert_study_area(conn, STUDY_AREA_ID, name=STUDY_AREA_ID, description="Sen1Floods11 hand-labeled Sentinel-1 flood chips")
-        bbox = conn.execute("SELECT min(minx) a, min(miny) b, max(maxx) c, max(maxy) d FROM assets WHERE kind='s1_raw'").fetchone()
-        conn.execute("UPDATE study_areas SET bbox_minx=?, bbox_miny=?, bbox_maxx=?, bbox_maxy=? WHERE id=?", (bbox["a"], bbox["b"], bbox["c"], bbox["d"], STUDY_AREA_ID))
-        conn.commit()
+        if (
+            conn.execute("SELECT 1 FROM study_areas WHERE id = ?", (STUDY_AREA_ID,)).fetchone()
+            is None
+        ):
+            db.upsert_study_area(
+                conn,
+                STUDY_AREA_ID,
+                name=STUDY_AREA_ID,
+                description="Sen1Floods11 hand-labeled Sentinel-1 flood chips",
+            )
         db.upsert_scene(
             conn,
             chip,
@@ -187,5 +209,24 @@ def ingest_dataset(conn, run, *, sample: bool, chip_ids: Optional[list[str]] = N
         db.audit(conn, "cli", "ingest_scene", {"scene": chip, "sample": sample})
         chip_ids_out.append(chip)
         n_valid += 1
+    if n_valid:
+        bounds = [
+            bounds_wgs84((row["minx"], row["miny"], row["maxx"], row["maxy"]), row["crs"])
+            for row in conn.execute(
+                "SELECT minx, miny, maxx, maxy, crs FROM assets WHERE kind='s1_raw'"
+            )
+        ]
+        crosses = any(west > east for west, _, east, _ in bounds)
+        bbox = (
+            -180.0 if crosses else min(b[0] for b in bounds),
+            min(b[1] for b in bounds),
+            180.0 if crosses else max(b[2] for b in bounds),
+            max(b[3] for b in bounds),
+        )
+        conn.execute(
+            "UPDATE study_areas SET bbox_minx=?, bbox_miny=?, bbox_maxx=?, bbox_maxy=? WHERE id=?",
+            (*bbox, STUDY_AREA_ID),
+        )
+        conn.commit()
     run.log(f"ingested {n_valid} scenes (sample={sample})")
     return {"scenes": chip_ids_out, "n": n_valid, "study_area": STUDY_AREA_ID}

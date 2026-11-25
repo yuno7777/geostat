@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -29,9 +29,11 @@ def from_counts(c: dict[str, int], zero_division: float = 0.0) -> dict[str, floa
     n = tp + fp + fn + tn
     precision = tp / (tp + fp) if (tp + fp) > 0 else zero_division
     recall = tp / (tp + fn) if (tp + fn) > 0 else zero_division
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else zero_division
+    f1 = (
+        2 * precision * recall / (precision + recall) if (precision + recall) > 0 else zero_division
+    )
     iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else zero_division
-    prevalence = tp / n if n > 0 else zero_division
+    prevalence = (tp + fn) / n if n > 0 else zero_division
     return {
         "precision": precision,
         "recall": recall,
@@ -46,7 +48,9 @@ def per_pixels_report(pred: Any, truth: Any, valid: Any) -> dict[str, float | in
     return from_counts(confusion_counts(pred, truth, valid))
 
 
-def aggregate(counts_list: list[dict[str, int]], zero_division: float = 0.0) -> dict[str, float | int]:
+def aggregate(
+    counts_list: list[dict[str, int]], zero_division: float = 0.0
+) -> dict[str, float | int]:
     if not counts_list:
         return from_counts({"tp": 0, "fp": 0, "fn": 0, "tn": 0, "n_valid": 0}, zero_division)
     agg = {k: sum(c[k] for c in counts_list) for k in ("tp", "fp", "fn", "tn", "n_valid")}

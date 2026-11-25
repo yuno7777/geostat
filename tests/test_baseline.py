@@ -28,3 +28,21 @@ def test_tune_threshold_requires_train_split():
     }
     with pytest.raises(BaselineError, match="no 'train' tiles"):
         tune_threshold(manifest)
+
+
+def test_threshold_binning_matches_brute_force_and_uses_selected_band(monkeypatch):
+    import geostat.baseline as baseline
+
+    values = np.array([-3, -2, -1, 0, 1], dtype=float)
+    truth = np.array([True, True, False, True, False])
+    monkeypatch.setattr(
+        baseline, "_tile_arrays", lambda _, band: (values if band == 0 else -values, truth)
+    )
+    manifest = {"tiles": [{"split": "train"}]}
+    result = baseline.tune_threshold(manifest, band=0, lo=-3, hi=1, step=1)
+    ious = []
+    for threshold in range(-3, 2):
+        predicted = values < threshold
+        ious.append(np.count_nonzero(predicted & truth) / np.count_nonzero(predicted | truth))
+    assert result["threshold_db"] == np.argmax(ious) - 3
+    assert result["train_metrics"]["iou"] == max(ious)

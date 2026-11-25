@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any
 
 from geostat import geoio
+from geostat.spatial import bounds_wgs84
 
 
 class TilingError(ValueError):
@@ -35,7 +37,7 @@ class TilingConfig:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "TilingConfig":
+    def from_dict(cls, payload: dict[str, Any]) -> TilingConfig:
         return cls(
             name=payload["name"],
             tile_size=int(payload.get("tile_size", 256)),
@@ -47,7 +49,7 @@ class TilingConfig:
         )
 
     @classmethod
-    def from_json(cls, path: Path) -> "TilingConfig":
+    def from_json(cls, path: Path) -> TilingConfig:
         return cls.from_dict(geoio.load_json(path))
 
 
@@ -59,7 +61,7 @@ def split_of(scene_event: str, cfg: TilingConfig) -> str:
     return "train"
 
 
-def scene_tiles(meta: "geoio.RasterMeta", cfg: TilingConfig) -> list[dict[str, Any]]:
+def scene_tiles(meta: geoio.RasterMeta, cfg: TilingConfig) -> list[dict[str, Any]]:
     if meta.width <= 0 or meta.height <= 0:
         raise TilingError(f"raster has no extent: {meta.path}")
     if cfg.stride <= 0 or cfg.tile_size <= 0:
@@ -68,6 +70,7 @@ def scene_tiles(meta: "geoio.RasterMeta", cfg: TilingConfig) -> list[dict[str, A
         raise TilingError("MVP contract: stride must equal tile_size (no seams)")
     import rasterio
     from rasterio import windows as rio_windows
+    from rasterio.transform import array_bounds
 
     affine = rasterio.Affine(*meta.transform[:6])
     rows: list[dict[str, Any]] = []
@@ -77,8 +80,11 @@ def scene_tiles(meta: "geoio.RasterMeta", cfg: TilingConfig) -> list[dict[str, A
         for col in range(n_x):
             h = min(cfg.tile_size, meta.height - row * cfg.tile_size)
             w = min(cfg.tile_size, meta.width - col * cfg.tile_size)
-            window = rio_windows.Window(col_off=col * cfg.tile_size, row_off=row * cfg.tile_size, width=w, height=h)
-            bounds = tuple(round(v, 6) for v in rio_windows.bounds(window, affine))
+            window = rio_windows.Window(
+                col_off=col * cfg.tile_size, row_off=row * cfg.tile_size, width=w, height=h
+            )
+            native_bounds = array_bounds(h, w, rio_windows.transform(window, affine))
+            bounds = bounds_wgs84(native_bounds, meta.crs)
             rows.append(
                 {
                     "row": row,
@@ -108,8 +114,6 @@ def build_manifest(
         event = scene.get("event") or chip.split("_")[0]
         meta = scene["meta"]
         scene_split = split_of(event, cfg)
-        if meta.width != meta.height:
-            raise TilingError(f"scene {chip}: not square ({meta.width}x{meta.height})")
         tiles = scene_tiles(meta, cfg)
         for t in tiles:
             tiles_out.append(
@@ -165,8 +169,7 @@ def scenes_with_meta_from_db(conn: Any) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT s.id AS chip_id, s.event_name AS event,
-               a.crs, a.width, a.height, a.resolution_x, a.resolution_y,
-               a.minx, a.miny, a.maxx, a.maxy, a.path
+               a.path
         FROM scenes s
         JOIN assets a ON a.id = s.s1_asset_id
         ORDER BY s.id
@@ -178,20 +181,7 @@ def scenes_with_meta_from_db(conn: Any) -> list[dict[str, Any]]:
             {
                 "id": r["chip_id"],
                 "event": r["event"],
-                "meta": geoio.RasterMeta(
-                    path=r["path"],
-                    crs=r["crs"],
-                    width=r["width"],
-                    height=r["height"],
-                    band_count=2,
-                    dtype="float32",
-                    nodata=float("nan"),
-                    has_nan_nodata=True,
-                    resolution_x=r["resolution_x"],
-                    resolution_y=r["resolution_y"],
-                    transform=(r["resolution_x"], 0.0, r["minx"], 0.0, -r["resolution_y"], r["maxy"]),
-                    bounds=(r["minx"], r["miny"], r["maxx"], r["maxy"]),
-                ),
+                "meta": geoio.read_meta(Path(r["path"])),
             }
         )
     return out

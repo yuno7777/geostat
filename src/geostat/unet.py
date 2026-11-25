@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Sequence
+from collections.abc import Sequence
+from typing import cast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+DOWNSAMPLE_FACTOR = 8
 
 
 class ConvBlock(nn.Module):
@@ -12,19 +15,25 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(num_groups=min(groups, out_ch) if out_ch % groups == 0 else 1, num_channels=out_ch),
+            nn.GroupNorm(
+                num_groups=min(groups, out_ch) if out_ch % groups == 0 else 1, num_channels=out_ch
+            ),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(num_groups=min(groups, out_ch) if out_ch % groups == 0 else 1, num_channels=out_ch),
+            nn.GroupNorm(
+                num_groups=min(groups, out_ch) if out_ch % groups == 0 else 1, num_channels=out_ch
+            ),
             nn.ReLU(inplace=True),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
+        return cast(torch.Tensor, self.block(x))
 
 
 class SmallUNet(nn.Module):
-    def __init__(self, in_ch: int = 2, out_ch: int = 1, channels: Sequence[int] = (8, 16, 32, 64)) -> None:
+    def __init__(
+        self, in_ch: int = 2, out_ch: int = 1, channels: Sequence[int] = (8, 16, 32, 64)
+    ) -> None:
         super().__init__()
         c1, c2, c3, c4 = channels
         self.enc1 = ConvBlock(in_ch, c1)
@@ -48,7 +57,8 @@ class SmallUNet(nn.Module):
         d3 = self.dec3(torch.cat([self.up3(b), e3], dim=1))
         d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))
         d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
-        return self.head(d1)
+        return cast(torch.Tensor, self.head(d1))
+
 
 def masked_bce_dice(
     logits: torch.Tensor,
@@ -57,7 +67,7 @@ def masked_bce_dice(
     *,
     bce_weight: float = 0.5,
     dice_weight: float = 0.5,
-    pos_weight: Optional[torch.Tensor | float] = None,
+    pos_weight: torch.Tensor | float | None = None,
     eps: float = 1e-6,
 ) -> torch.Tensor:
     if pos_weight is not None and not isinstance(pos_weight, torch.Tensor):
