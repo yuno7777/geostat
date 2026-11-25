@@ -7,6 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+DOWNSAMPLE_FACTOR = 8
+
+
 class ConvBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, groups: int = 4) -> None:
         super().__init__()

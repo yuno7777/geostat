@@ -62,13 +62,17 @@ def train_model(
     model = SmallUNet(in_ch=2, out_ch=1, channels=channels)
     run.log(f"model params: {count_params(model)}")
 
-    train_ds = FloodTileDataset(manifest, "train", augment=bool(config.get("augment", True)), seed=int(config["seed"]))
+    workers = int(config.get("num_workers", 0))
+    train_ds = FloodTileDataset(
+        manifest, "train", augment=bool(config.get("augment", True)),
+        seed=int(config["seed"]), cache_sources=workers == 0,
+    )
     val_ds = FloodTileDataset(manifest, "val", return_metadata=True)
     batch_size = int(config["batch_size"])
     gen = torch.Generator()
     gen.manual_seed(int(config["seed"]))
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True, num_workers=int(config.get("num_workers", 0)), generator=gen
+        train_ds, batch_size=batch_size, shuffle=True, num_workers=workers, generator=gen
     )
     opt = torch.optim.AdamW(model.parameters(), lr=float(config["lr"]), weight_decay=float(config["weight_decay"]))
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=int(config["epochs"]))
@@ -144,7 +148,8 @@ def _train_pos_weight(train_ds: FloodTileDataset) -> float:
 def _eval_split(model: Any, ds: FloodTileDataset, threshold: float = 0.5) -> dict[str, Any]:
     model.eval()
     entries = []
-    for item in ds:
+    for idx in range(len(ds)):
+        item = ds[idx]
         x = item["x"][None]
         y = item["y"].numpy()
         m = item["mask"].numpy()
@@ -176,12 +181,15 @@ def evaluate_model(
     from geostat import geoio
 
     manifest = geoio.load_json(manifest_path)
-    state = torch.load(weights_path, map_location="cpu", weights_only=False)
+    state = torch.load(weights_path, map_location="cpu", weights_only=True)
     channels = tuple(int(c) for c in state["channels"])
     model = SmallUNet(in_ch=2, out_ch=1, channels=channels)
     model.load_state_dict(state["state_dict"])
     ds = FloodTileDataset(manifest, split, return_metadata=True)
-    res = _eval_split(model, ds, threshold)
+    try:
+        res = _eval_split(model, ds, threshold)
+    finally:
+        ds.close()
     res["threshold"] = threshold
     res["split"] = split
     res["n_scenes"] = manifest["count"].get("scenes")

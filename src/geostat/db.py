@@ -4,6 +4,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 from typing import Any, Iterator, Optional
 
 from geostat.provenance import code_revision, environment_snapshot, utcnow
@@ -229,7 +230,7 @@ class RunCtx:
         self.conn = conn
         self.kind = kind
         self.console = console
-        self.run_id = run_id or f"{kind}-{utcnow().replace(':', '').replace('-', '')}"
+        self.run_id = run_id or f"{kind}-{utcnow().replace(':', '').replace('-', '')}-{uuid4().hex[:12]}"
         self.started_at = utcnow()
         self.finished_at: Optional[str] = None
         self.status = "started"
@@ -240,7 +241,7 @@ class RunCtx:
         self.config_json = dumps(config or {})
         self.env_json = dumps(environment_snapshot())
         self.conn.execute(
-            "INSERT OR REPLACE INTO runs (id, kind, status, scene_id, model_id, config_json, env_json, code_revision, started_at, notes_json)"
+            "INSERT INTO runs (id, kind, status, scene_id, model_id, config_json, env_json, code_revision, started_at, notes_json)"
             " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 self.run_id,
@@ -270,7 +271,7 @@ class RunCtx:
             print(f"[run:{self.run_id}] {prefix}{message}")
 
     def add_artifact(self, role: str, path: str | Path) -> None:
-        self.artifact_paths[role] = str(path)
+        self.artifact_paths[role] = str(Path(path).resolve())
 
     def finish(self) -> str:
         self.status = "completed"
@@ -334,7 +335,7 @@ def latest_run_kind(conn: sqlite3.Connection, kind: str, scene_id: Optional[str]
     if scene_id:
         q += " AND scene_id = ?"
         args.append(scene_id)
-    q += " ORDER BY started_at DESC LIMIT 1"
+    q += " ORDER BY started_at DESC, rowid DESC LIMIT 1"
     return conn.execute(q, args).fetchone()
 
 

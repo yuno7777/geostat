@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 PKG_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PKG_DIR.parent.parent
-PROJECT_ROOT = PROJECT_ROOT.parent if PROJECT_ROOT.name == "src" else PROJECT_ROOT
+if PKG_DIR.parent.name != "src":
+    PROJECT_ROOT = Path.cwd()
 
 DATA_DIR = Path(os.environ.get("GEOSTAT_DATA_DIR", PROJECT_ROOT / "data"))
 ARTIFACTS_DIR = Path(os.environ.get("GEOSTAT_ARTIFACTS_DIR", PROJECT_ROOT / "artifacts"))
@@ -68,3 +70,9 @@ def ensure_dirs() -> None:
 def runs_dir() -> Path:
     ensure_dirs()
     return ARTIFACTS_DIR / "runs"
+
+
+def path_component(value: str, label: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+        raise ValueError(f"{label} must be a simple identifier of at most 128 characters")
+    return value

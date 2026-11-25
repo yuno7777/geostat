@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import geostat.settings as settings
 
@@ -23,7 +25,7 @@ def sha256_hex(path: Path) -> str:
 
 
 def md5_hex(path: Path) -> str:
-    h = hashlib.md5()
+    h = hashlib.md5(usedforsecurity=False)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
@@ -90,15 +92,16 @@ def _ram_gb() -> float | None:
             ]
         stat = MEMORYSTATUSEX()
         stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return round(stat.ullTotalPhys / (1024 ** 3), 2)
+        if not ctypes.WinDLL("kernel32").GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return None
+        return round(int(stat.ullTotalPhys) / (1024 ** 3), 2)
     except Exception:
         return None
 
 
 def _ram_gb_posix() -> float | None:
     try:
-        return round(open("/proc/meminfo").readline().split()[1] and 0)
+        return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / (1024 ** 3), 2)
     except Exception:
         return None
 
@@ -112,7 +115,7 @@ def environment_snapshot() -> dict:
         "machine": platform.machine(),
         "cpu": platform.processor() or "unknown",
         "cpu_cores": os.cpu_count(),
-        "ram_gb": _ram_gb(),
+        "ram_gb": _ram_gb() if os.name == "nt" else _ram_gb_posix(),
         "gdal": _gdal_version(),
         "torch": _torch_version(),
     }
@@ -123,7 +126,7 @@ def _gdal_version() -> str:
     try:
         import rasterio
 
-        return rasterio.__gdal_version__
+        return str(rasterio.__gdal_version__)
     except Exception:
         return "unknown"
 

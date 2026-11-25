@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from geostat import db, geoio
+from geostat import db, geoio, settings
+from geostat.spatial import bounds_wgs84
 from geostat.settings import ARTIFACTS_DIR, CONFIGS_DIR, DB_PATH, HOST, PORT, ensure_dirs
 
 
@@ -61,9 +62,6 @@ def cmd_download(ns: argparse.Namespace) -> int:
         manifest = download.download_sample() if ns.mode == "sample" else download.download_all()
         for f in manifest["files"]:
             run.log(f"{f['name'].split('/')[-1]} sha256={f['sha256'][:12]} cached={f['cached']}")
-        base = (
-            Path.download.settings if False else None  # unused placeholder kept for lint cleanliness
-        )
         from geostat.settings import RAW_DIR
 
         run.add_artifact("raw_manifest", RAW_DIR / "sen1floods11" / "v1.1" / "MANIFEST.json")
@@ -130,7 +128,8 @@ def cmd_manifest(ns: argparse.Namespace) -> int:
         tiling.split_disjointness_check(manifest)
         out_dir = ARTIFACTS_DIR / "manifests"
         out_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = out_dir / f"{cfg.name}.json"
+        name = settings.path_component(cfg.name, "manifest name")
+        manifest_path = out_dir / f"{name}.json"
         geoio.save_json(manifest_path, manifest)
         run.add_artifact("manifest", manifest_path)
         run.set_metrics(manifest["count_per_split"])
@@ -185,26 +184,24 @@ def tiling_manifest_sha(path: Path) -> str:
 
 
 def cmd_train(ns: argparse.Namespace) -> int:
-    from pathlib import Path as _P
     from geostat import train
     from geostat.provenance import sha256_hex
 
     cfg = load_config(ns.config)
     conn = db.connect()
-    run = db.begin_run(conn, "train", config=cfg, run_id=None).__enter__()
-    summary = train.train_model(conn, run, cfg)
-    model_id = f"unet-opt-{run.run_id}"
-    db.upsert_model(
-        conn,
-        model_id,
-        kind="unet",
-        config_json=test_config_json(cfg),
-        checkpoint_path=str(ARTIFACTS_DIR / "models" / run.run_id / "model.pth"),
-        checkpoint_sha256=sha256_hex(ARTIFACTS_DIR / "models" / run.run_id / "model.pth"),
-        summary_json=db.dumps(summary),
-        created_by_run=run.run_id,
-    )
-    run.finish()
+    with db.begin_run(conn, "train", config=cfg) as run:
+        summary = train.train_model(conn, run, cfg)
+        model_id = f"unet-opt-{run.run_id}"
+        db.upsert_model(
+            conn,
+            model_id,
+            kind="unet",
+            config_json=test_config_json(cfg),
+            checkpoint_path=str(ARTIFACTS_DIR / "models" / run.run_id / "model.pth"),
+            checkpoint_sha256=sha256_hex(ARTIFACTS_DIR / "models" / run.run_id / "model.pth"),
+            summary_json=db.dumps(summary),
+            created_by_run=run.run_id,
+        )
     print(f"model {model_id} trained (best_val_iou={summary['best_val_iou']:.4f})")
     return 0
 
@@ -213,7 +210,7 @@ def test_config_json(cfg: dict[str, Any]) -> str:
     return db.dumps(cfg)
 
 
-def load_config(path: _P) -> dict[str, Any]:  # same path fix inside train; keep simple here
+def load_config(path: Path) -> dict[str, Any]:  # same path fix inside train; keep simple here
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -289,9 +286,17 @@ def cmd_exposure(ns: argparse.Namespace) -> int:
     if not flood_geojson or not Path(flood_geojson).exists():
         print("no flood GeoJSON artifact found; re-run analyze", file=sys.stderr)
         return 2
-    s1_asset = conn.execute("SELECT minx, miny, maxx, maxy FROM assets WHERE id = ?", (db.get_scene(conn, ns.scene)["s1_asset_id"],)).fetchone()
-    bbox = (s1_asset["minx"], s1_asset["miny"], s1_asset["maxx"], s1_asset["maxy"])
-    with db.begin_run(conn, "exposure", config={"scene": ns.scene, "bbox": list(bbox), "refresh_osm": ns.refresh}, scene_id=ns.scene) as run:
+    s1_asset = conn.execute(
+        "SELECT a.minx, a.miny, a.maxx, a.maxy, a.crs FROM assets a "
+        "JOIN scenes s ON s.s1_asset_id = a.id WHERE s.id = ?", (ns.scene,)
+    ).fetchone()
+    if s1_asset is None:
+        print(f"scene {ns.scene} has no registered SAR raster", file=sys.stderr)
+        return 2
+    bbox = bounds_wgs84(
+        (s1_asset["minx"], s1_asset["miny"], s1_asset["maxx"], s1_asset["maxy"]), s1_asset["crs"]
+    )
+    with db.begin_run(conn, "exposure", config={"scene": ns.scene, "bbox": list(bbox), "refresh_osm": ns.refresh, "analyze_run": analyze["id"]}, scene_id=ns.scene) as run:
         summary = exposure.run_exposure(run, ns.scene, bbox, Path(flood_geojson), refresh_osm=ns.refresh)
         out_path = settings_runs_dir() / run.run_id / f"exposure_{ns.scene}.json"
         geoio.save_json(out_path, summary)
@@ -383,7 +388,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     serve.set_defaults(func=cmd_serve)
 
     ns = p.parse_args(argv)
-    return ns.func(ns) or 0
+    try:
+        return int(ns.func(ns) or 0)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"geostat: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

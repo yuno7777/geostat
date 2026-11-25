@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+import math
+from typing import Any
 
 import numpy as np
 
@@ -17,15 +18,15 @@ class BaselineError(RuntimeError):
 VH_BAND_INDEX = 1  # 0-based index into S1 band stack [VV, VH]
 
 
-def _tile_arrays(tile: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _tile_arrays(tile: dict[str, Any], band: int) -> tuple[np.ndarray, np.ndarray]:
     s1_path = Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "S1Hand" / f"{tile['scene']}_S1Hand.tif"
     lab_path = Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "LabelHand" / f"{tile['scene']}_LabelHand.tif"
-    s1 = geoio.read_window(s1_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"], bands=[VH_BAND_INDEX + 1])
+    s1 = geoio.read_window(s1_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"], bands=[band + 1], as_float=True)
     lab = geoio.read_window(lab_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"])
     if lab.ndim == 3 and lab.shape[0] == 1:
         lab = lab[0]
     vh = s1[0] if s1.ndim == 3 else s1
-    valid = (lab != -1) & np.isfinite(vh)
+    valid = np.isin(lab, (0, 1)) & np.isfinite(vh)
     vh2 = vh.astype(np.float64, copy=False)
     y_small = (lab == 1)
     return vh2[valid], y_small[valid]
@@ -39,7 +40,14 @@ def tune_threshold(
     hi: float = -8.0,
     step: float = 0.25,
 ) -> dict[str, Any]:
-    thresholds = np.arange(lo, hi + 1e-9, step, dtype=np.float64)
+    if type(band) is not int or band not in (0, 1):
+        raise BaselineError("band must be a zero-based SAR band index (0 for VV, 1 for VH)")
+    if not all(map(math.isfinite, (lo, hi, step))) or lo > hi or step <= 0:
+        raise BaselineError("threshold grid requires finite lo <= hi and a positive step")
+    grid_steps = (hi - lo) / step
+    if grid_steps >= 100_000:
+        raise BaselineError("threshold grid is too large (maximum 100000 thresholds)")
+    thresholds = lo + np.arange(math.floor(grid_steps + 1e-12) + 1) * step
     cum_water = np.zeros(len(thresholds), dtype=np.int64)
     cum_non_water = np.zeros(len(thresholds), dtype=np.int64)
     total_water = 0
@@ -49,21 +57,18 @@ def tune_threshold(
         raise BaselineError("manifest has no 'train' tiles; cannot tune baseline without training data")
     n_tiles_used = 0
     for t in train_tiles:
-        vh, y_small = _tile_arrays(t)
+        vh, y_small = _tile_arrays(t, band)
         if vh.size == 0:
             continue
         n_tiles_used += 1
-        order = np.argsort(vh, kind="stable")
-        vh_sorted = vh[order]
-        y_sorted = y_small[order].astype(np.int64)
-        cum_w = np.cumsum(y_sorted)
-        idx = np.searchsorted(vh_sorted, thresholds, side="left")
-        tp_per_t = np.concatenate([[0], cum_w])[idx]
-        fp_per_t = np.concatenate([[0], np.arange(1, y_sorted.size + 1) - cum_w])[idx]
-        total_water += int(y_sorted.sum())
-        n_pixels += int(y_sorted.size)
-        cum_water += tp_per_t
-        cum_non_water += fp_per_t
+        # The first threshold strictly above each observation is its first positive prediction.
+        first_positive = np.searchsorted(thresholds, vh, side="right")
+        positives = np.bincount(first_positive[y_small], minlength=len(thresholds) + 1)
+        negatives = np.bincount(first_positive[~y_small], minlength=len(thresholds) + 1)
+        total_water += int(y_small.sum())
+        n_pixels += int(vh.size)
+        cum_water += positives[:-1].cumsum()
+        cum_non_water += negatives[:-1].cumsum()
     if n_tiles_used == 0 or total_water == 0:
         raise BaselineError(f"no water pixels found in train tiles (tiles={n_tiles_used})")
     fn_per_t = total_water - cum_water
@@ -96,21 +101,17 @@ def predict_tile_vh(vh: np.ndarray, threshold_db: float) -> np.ndarray:
 def eval_threshold_on_split(
     manifest: dict[str, Any], threshold_db: float, split: str
 ) -> dict[str, Any]:
+    if split not in {"train", "val", "test"} or not math.isfinite(threshold_db):
+        raise BaselineError("evaluation requires a valid split and finite threshold")
     entries = []
     for tile in manifest["tiles"]:
         if tile["split"] != split:
             continue
-        s1_path = Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "S1Hand" / f"{tile['scene']}_S1Hand.tif"
-        lab_path = Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "LabelHand" / f"{tile['scene']}_LabelHand.tif"
-        s1 = geoio.read_window(s1_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"], bands=[VH_BAND_INDEX + 1])
-        lab = geoio.read_window(lab_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"])
-        if lab.ndim == 3 and lab.shape[0] == 1:
-            lab = lab[0]
-        vh = s1[0] if s1.ndim == 3 else s1
-        valid = np.isfinite(vh) & (lab != -1)
+        vh, truth = _tile_arrays(tile, VH_BAND_INDEX)
         pred = predict_tile_vh(vh, threshold_db)
-        truth = (lab == 1).astype(np.uint8)
-        entries.append({"event": tile.get("event"), "counts": metrics.confusion_counts(pred, truth, valid.astype(np.uint8))})
+        entries.append({"event": tile.get("event"), "counts": metrics.confusion_counts(
+            pred, truth, np.ones(vh.shape, dtype=np.bool_)
+        )})
     agg = metrics.aggregate([e["counts"] for e in entries])
     out = dict(agg)
     out["per_event"] = metrics.per_event_metrics(entries)
