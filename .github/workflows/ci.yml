@@ -9,6 +9,7 @@ jobs:
   checks:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         python: ['3.12', '3.13']
         os: [ubuntu-latest, windows-latest]
@@ -24,6 +25,7 @@ jobs:
       - run: uv run --no-sync mypy
       - run: uv run --no-sync pytest --basetemp "${{ runner.temp }}/GeoStat tests ü"
       - run: uv run --no-sync geostat --help
+      - run: uv run --no-sync python scripts/benchmark_spatial.py --worker raster-windowed --size small
 
   real-data-smoke:
     runs-on: ${{ matrix.os }}

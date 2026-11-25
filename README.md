@@ -83,7 +83,7 @@ print(result["roads"]["flooded_m"])
 
 ## Benchmarks
 
-Run from the checkout on Linux or macOS.
+Run from the checkout on Windows, Linux, or macOS. Peak process memory is RSS on Linux and macOS and the peak working set on Windows.
 
 ```bash
 uv run --locked --extra dev python scripts/benchmark_spatial.py --repeats 3
