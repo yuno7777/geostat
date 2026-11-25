@@ -18,10 +18,10 @@ from shapely import (
     transform,
     union_all,
 )
+from shapely.affinity import translate
 from shapely.errors import GEOSException
 from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, box
 from shapely.geometry.base import BaseGeometry
-from shapely.affinity import translate
 
 GEOD = Geod(ellps="WGS84")
 WGS84 = "EPSG:4326"
@@ -42,7 +42,9 @@ def _parts(geom: BaseGeometry) -> Iterator[BaseGeometry]:
 def _coordinates(geom: BaseGeometry) -> Coordinates:
     coords: Coordinates = get_coordinates(geom)
     if not np.isfinite(coords).all() or (np.abs(coords[:, 1]) > 90).any():
-        raise ValueError("WGS84 geometry contains nonfinite coordinates or latitude outside [-90, 90]")
+        raise ValueError(
+            "WGS84 geometry contains nonfinite coordinates or latitude outside [-90, 90]"
+        )
     return coords
 
 
@@ -65,22 +67,21 @@ def wgs84_area_m2(geom: BaseGeometry) -> float:
     areas = []
     for part in _parts(geom):
         if isinstance(part, Polygon):
-            # GEOS determines winding in XY. Unwrap local antimeridian rings first.
-            coords = get_coordinates(part)
-            local = _around(part, float(coords[0, 0]))
-            # A ring encircling a pole may have zero area in XY. Geod can still
-            # measure it, so measure each ring independently using its absolute area.
-            polygon = local if local.is_valid else part
-            shell, _ = GEOD.geometry_area_perimeter(Polygon(polygon.exterior))
+            # Independent rings make measurements insensitive to winding,
+            # including holes and rings close to a pole.
+            shell, _ = GEOD.geometry_area_perimeter(Polygon(part.exterior))
             holes = math.fsum(
-                abs(GEOD.geometry_area_perimeter(Polygon(ring))[0])
-                for ring in polygon.interiors
+                abs(GEOD.geometry_area_perimeter(Polygon(ring))[0]) for ring in part.interiors
             )
             areas.append(max(0.0, abs(shell) - holes))
     return math.fsum(areas)
 
 
 def _around(geom: BaseGeometry, center: float) -> BaseGeometry:
+    minx, _, maxx, _ = geom.bounds
+    if center - 180 <= minx and maxx < center + 180:
+        return geom
+
     def shift(coords: Coordinates) -> Coordinates:
         delta = coords[:, 0] - center
         outside = (delta < -180) | (delta >= 180)
@@ -98,8 +99,13 @@ def _to_wgs84(crs: str) -> Transformer:
 
 def bounds_wgs84(bounds: BBox, crs: str) -> BBox:
     """Return west, south, east, north. East may be less than west at the dateline."""
-    west, south, east, north = _to_wgs84(crs).transform_bounds(*bounds, densify_pts=21, errcheck=True)
-    if not all(math.isfinite(v) for v in (west, south, east, north)) or not -90 <= south < north <= 90:
+    west, south, east, north = _to_wgs84(crs).transform_bounds(
+        *bounds, densify_pts=21, errcheck=True
+    )
+    if (
+        not all(math.isfinite(v) for v in (west, south, east, north))
+        or not -90 <= south < north <= 90
+    ):
         raise ValueError("raster bounds do not define a finite WGS84 extent")
     if east - west >= 360:
         return -180.0, south, 180.0, north
@@ -114,7 +120,8 @@ def bounds_wgs84(bounds: BBox, crs: str) -> BBox:
 def polygons_wgs84(geom: BaseGeometry, crs: str) -> Iterator[BaseGeometry]:
     """Transform raster polygons and cut any antimeridian crossings for GeoJSON."""
     converter = _to_wgs84(crs)
-    if not converter.source_crs.equals(converter.target_crs, ignore_axis_order=True):
+    source = converter.source_crs
+    if source is None or not source.equals(WGS84, ignore_axis_order=True):
         minx, miny, maxx, maxy = geom.bounds
         geom = segmentize(geom, max(maxx - minx, maxy - miny) / 32)
 
@@ -134,8 +141,10 @@ def polygons_wgs84(geom: BaseGeometry, crs: str) -> Iterator[BaseGeometry]:
             raise ValueError("flood polygon is invalid or too wide for a local scene overlay")
         for strip in range(math.floor((minx + 180) / 360), math.floor((maxx + 180) / 360) + 1):
             offset = 360 * strip
-            clipped = local if strip == 0 and minx >= -180 and maxx <= 180 else local.intersection(
-                box(-180 + offset, -90, 180 + offset, 90)
+            clipped = (
+                local
+                if strip == 0 and minx >= -180 and maxx <= 180
+                else local.intersection(box(-180 + offset, -90, 180 + offset, 90))
             )
             for piece in _parts(clipped):
                 if isinstance(piece, Polygon):
@@ -178,9 +187,10 @@ class FloodIndex:
             return None
         candidates = self._tree.geometries.take(matches)
         try:
-            clipped: BaseGeometry = intersection(local, candidates[0]) if matches.size == 1 else union_all(
-                intersection(candidates, local)
-            )
+            # Dissolve polygons before clipping to avoid counting overlapping
+            # line segments whose intersection coordinates differ by a few ULPs.
+            flood = candidates[0] if matches.size == 1 else union_all(candidates)
+            clipped: BaseGeometry = intersection(local, flood)
             return clipped
         except GEOSException as exc:
             raise ValueError("could not intersect asset with flood polygons") from exc

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import pytest
@@ -16,13 +15,14 @@ def set_deterministic_seeds():
     np.random.seed(42)
     try:
         import torch
+
         torch.manual_seed(42)
     except ImportError:
         pass
 
 
 @pytest.fixture
-def synthetic_raster_pair(tmp_path: Path) -> Tuple[Path, Path]:
+def synthetic_raster_pair(tmp_path: Path) -> tuple[Path, Path]:
     width, height = 64, 64
     transform = from_origin(-65.0, -15.0, 0.0001, 0.0001)
     crs = "EPSG:4326"
@@ -50,7 +50,7 @@ def synthetic_raster_pair(tmp_path: Path) -> Tuple[Path, Path]:
     label_path = tmp_path / "sample_LabelHand.tif"
     label_data = np.zeros((height, width), dtype=np.int16)
     label_data[10:30, 10:30] = 1  # water
-    label_data[0:5, 0:5] = -1     # nodata
+    label_data[0:5, 0:5] = -1  # nodata
 
     with rasterio.open(
         label_path,
@@ -66,3 +66,23 @@ def synthetic_raster_pair(tmp_path: Path) -> Tuple[Path, Path]:
         dst.write(label_data, 1)
 
     return s1_path, label_path
+
+
+@pytest.fixture
+def api_client(tmp_path: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from geostat import api, settings
+
+    data = tmp_path / "data"
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setattr(settings, "DATA_DIR", data)
+    monkeypatch.setattr(settings, "ARTIFACTS_DIR", artifacts)
+    monkeypatch.setattr(settings, "RAW_DIR", data / "raw")
+    monkeypatch.setattr(settings, "CACHE_DIR", data / "cache")
+    monkeypatch.setattr(settings, "REFERENCE_DIR", data / "reference")
+    monkeypatch.setattr(api, "DATA_DIR", data)
+    monkeypatch.setattr(api, "ARTIFACTS_DIR", artifacts)
+    monkeypatch.setattr(api, "DB_PATH", data / "test.sqlite3")
+    with TestClient(api.create_app()) as client:
+        yield client

@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
@@ -13,8 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
-from geostat import db, exposure as expo, geoio
-from geostat import __version__
+from geostat import __version__, db, geoio
+from geostat import exposure as expo
 from geostat.settings import ARTIFACTS_DIR, DATA_DIR, DB_PATH, FRONTEND_DIR, ensure_dirs
 from geostat.spatial import FloodIndex, bounds_wgs84, wgs84_area_m2, wgs84_length_m
 
@@ -42,7 +42,7 @@ def _json_row(row: Any) -> dict[str, Any]:
         val = row[key]
         if isinstance(val, str) and val and val[0] in "{[":
             try:
-                out[key] = json.loads(val)
+                out[key] = json.loads(val, parse_constant=lambda _: None)
             except Exception:
                 out[key] = val
         else:
@@ -58,7 +58,8 @@ def _require_scene(conn: sqlite3.Connection, scene_id: str) -> dict[str, Any]:
 
 
 def _flood_features(
-    conn: sqlite3.Connection, scene_id: str,
+    conn: sqlite3.Connection,
+    scene_id: str,
 ) -> tuple[list[dict[str, Any]], str] | None:
     row = db.latest_run_kind(conn, "analyze", scene_id=scene_id)
     if row is None:
@@ -76,11 +77,13 @@ def _flood_features(
     return data["features"], str(row["id"])
 
 
-def _reference_geojson(conn: sqlite3.Connection, scene_id: str) -> Optional[dict[str, Any]]:
+def _reference_geojson(conn: sqlite3.Connection, scene_id: str) -> dict[str, Any] | None:
     scene = db.get_scene(conn, scene_id)
     if scene is None:
         return None
-    asset = conn.execute("SELECT path FROM assets WHERE id = ?", (scene["label_asset_id"],)).fetchone()
+    asset = conn.execute(
+        "SELECT path FROM assets WHERE id = ?", (scene["label_asset_id"],)
+    ).fetchone()
     if not asset:
         return None
     label_path = _local_path(asset["path"], DATA_DIR)
@@ -91,7 +94,9 @@ def _reference_geojson(conn: sqlite3.Connection, scene_id: str) -> Optional[dict
     return geoio.water_feature_collection(lab, meta, {"reference_water": 1})
 
 
-def _osm_layer_geojson(conn: sqlite3.Connection, scene_id: str, kind: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+def _osm_layer_geojson(
+    conn: sqlite3.Connection, scene_id: str, kind: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     d = expo.cache_dir(scene_id)
     resp_path = d / "response.json"
     meta_path = d / "response_meta.json"
@@ -101,7 +106,9 @@ def _osm_layer_geojson(conn: sqlite3.Connection, scene_id: str, kind: str) -> tu
     parsed = expo.parse_osm_elements(payload.get("elements", []))
     analysis = _flood_features(conn, scene_id)
     features = analysis[0] if analysis is not None else []
-    flood_index = FloodIndex([shape(f["geometry"]) for f in features if f.get("geometry") is not None])
+    flood_index = FloodIndex(
+        [shape(f["geometry"]) for f in features if f.get("geometry") is not None]
+    )
     measure = wgs84_length_m if kind == "roads" else wgs84_area_m2
     feats = []
     for item in parsed.get(kind if kind in ("roads", "buildings") else "roads", []):
@@ -112,8 +119,13 @@ def _osm_layer_geojson(conn: sqlite3.Connection, scene_id: str, kind: str) -> tu
         props["flooded"] = clipped is not None and measure(clipped) > 0.0
         feats.append(geoio.geometry_feature(g, props))
     fc = geoio.feature_collection(feats)
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-    return fc, {"attribution": "© OpenStreetMap contributors (ODbL 1.0)", "retrieved_at": meta.get("retrieved_at")}
+    meta = payload.get("_geostat_meta") or (
+        geoio.load_json(meta_path) if meta_path.is_file() else {}
+    )
+    return fc, {
+        "attribution": "© OpenStreetMap contributors (ODbL 1.0)",
+        "retrieved_at": meta.get("retrieved_at"),
+    }
 
 
 def create_app() -> FastAPI:
@@ -143,15 +155,24 @@ def create_app() -> FastAPI:
     def study_areas(conn: Connection) -> list[dict[str, Any]]:
         out = []
         for row in db.list_study_areas(conn):
-            n = conn.execute("SELECT COUNT(*) AS n FROM scenes WHERE study_area_id = ?", (row["id"],)).fetchone()["n"]
-            out.append({
-                "id": row["id"],
-                "name": row["name"],
-                "description": row["description"],
-                "bbox": [row["bbox_minx"], row["bbox_miny"], row["bbox_maxx"], row["bbox_maxy"]],
-                "crs": row["crs"],
-                "n_scenes": n,
-            })
+            n = conn.execute(
+                "SELECT COUNT(*) AS n FROM scenes WHERE study_area_id = ?", (row["id"],)
+            ).fetchone()["n"]
+            out.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "description": row["description"],
+                    "bbox": [
+                        row["bbox_minx"],
+                        row["bbox_miny"],
+                        row["bbox_maxx"],
+                        row["bbox_maxy"],
+                    ],
+                    "crs": row["crs"],
+                    "n_scenes": n,
+                }
+            )
         return out
 
     @app.get("/api/study-areas/{sa_id}")
@@ -169,7 +190,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/scenes")
-    def scenes(conn: Connection, study_area: Optional[str] = None) -> dict[str, Any]:
+    def scenes(conn: Connection, study_area: str | None = None) -> dict[str, Any]:
         rows = db.list_scenes(conn, study_area)
         return {"scenes": [_json_row(r) for r in rows]}
 
@@ -186,7 +207,12 @@ def create_app() -> FastAPI:
         return data
 
     @app.get("/api/runs")
-    def runs(conn: Connection, kind: Optional[str] = None, scene_id: Optional[str] = None, limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
+    def runs(
+        conn: Connection,
+        kind: str | None = None,
+        scene_id: str | None = None,
+        limit: int = Query(50, ge=1, le=200),
+    ) -> dict[str, Any]:
         rows = db.list_runs(conn, kind=kind, scene_id=scene_id, limit=limit)
         return {"runs": [_json_row(r) for r in rows]}
 
@@ -204,9 +230,16 @@ def create_app() -> FastAPI:
         _require_scene(conn, scene_id)
         run_row = db.latest_run_kind(conn, "analyze", scene_id=scene_id)
         if run_row is None:
-            return {"scene_id": scene_id, "run_id": None, "layers": None, "exposure": None, "metrics": None, "artifacts": None}
-        artifacts = (_json_row(run_row).get("artifact_paths_json") or {})
-        metrics_row = (_json_row(run_row).get("metrics_json") or {})
+            return {
+                "scene_id": scene_id,
+                "run_id": None,
+                "layers": None,
+                "exposure": None,
+                "metrics": None,
+                "artifacts": None,
+            }
+        artifacts = _json_row(run_row).get("artifact_paths_json") or {}
+        metrics_row = _json_row(run_row).get("metrics_json") or {}
         expo_row = conn.execute(
             "SELECT e.summary_json FROM exposures e JOIN runs r ON r.id = e.run_id "
             "WHERE r.scene_id = ? AND r.kind = 'exposure' AND r.status = 'completed' "
@@ -255,7 +288,9 @@ def create_app() -> FastAPI:
         _require_scene(conn, scene_id)
         fc, meta = _osm_layer_geojson(conn, scene_id, "roads")
         if fc is None:
-            raise HTTPException(status_code=404, detail="scene has no OSM cache; run: geostat exposure --scene ...")
+            raise HTTPException(
+                status_code=404, detail="scene has no OSM cache; run: geostat exposure --scene ..."
+            )
         return JSONResponse(fc)
 
     @app.get("/api/layers/buildings/{scene_id}")
@@ -263,7 +298,9 @@ def create_app() -> FastAPI:
         _require_scene(conn, scene_id)
         fc, meta = _osm_layer_geojson(conn, scene_id, "buildings")
         if fc is None:
-            raise HTTPException(status_code=404, detail="scene has no OSM cache; run: geostat exposure --scene ...")
+            raise HTTPException(
+                status_code=404, detail="scene has no OSM cache; run: geostat exposure --scene ..."
+            )
         return JSONResponse(fc)
 
     @app.get("/api/exposure/{scene_id}")
@@ -289,7 +326,9 @@ def create_app() -> FastAPI:
         artifacts = _json_row(row).get("artifact_paths_json") or {}
         registered = {Path(v).name: Path(v) for v in artifacts.values() if isinstance(v, str)}
         if filename not in registered:
-            raise HTTPException(status_code=403, detail="file is not a registered artifact of this run")
+            raise HTTPException(
+                status_code=403, detail="file is not a registered artifact of this run"
+            )
         target = _local_path(registered[filename], ARTIFACTS_DIR, DATA_DIR)
         if not target.is_file():
             raise HTTPException(status_code=404, detail="registered artifact file missing on disk")

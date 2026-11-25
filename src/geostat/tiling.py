@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any
 
 from geostat import geoio
 from geostat.spatial import bounds_wgs84
@@ -36,7 +37,7 @@ class TilingConfig:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "TilingConfig":
+    def from_dict(cls, payload: dict[str, Any]) -> TilingConfig:
         return cls(
             name=payload["name"],
             tile_size=int(payload.get("tile_size", 256)),
@@ -48,7 +49,7 @@ class TilingConfig:
         )
 
     @classmethod
-    def from_json(cls, path: Path) -> "TilingConfig":
+    def from_json(cls, path: Path) -> TilingConfig:
         return cls.from_dict(geoio.load_json(path))
 
 
@@ -60,7 +61,7 @@ def split_of(scene_event: str, cfg: TilingConfig) -> str:
     return "train"
 
 
-def scene_tiles(meta: "geoio.RasterMeta", cfg: TilingConfig) -> list[dict[str, Any]]:
+def scene_tiles(meta: geoio.RasterMeta, cfg: TilingConfig) -> list[dict[str, Any]]:
     if meta.width <= 0 or meta.height <= 0:
         raise TilingError(f"raster has no extent: {meta.path}")
     if cfg.stride <= 0 or cfg.tile_size <= 0:
@@ -79,7 +80,9 @@ def scene_tiles(meta: "geoio.RasterMeta", cfg: TilingConfig) -> list[dict[str, A
         for col in range(n_x):
             h = min(cfg.tile_size, meta.height - row * cfg.tile_size)
             w = min(cfg.tile_size, meta.width - col * cfg.tile_size)
-            window = rio_windows.Window(col_off=col * cfg.tile_size, row_off=row * cfg.tile_size, width=w, height=h)
+            window = rio_windows.Window(
+                col_off=col * cfg.tile_size, row_off=row * cfg.tile_size, width=w, height=h
+            )
             native_bounds = array_bounds(h, w, rio_windows.transform(window, affine))
             bounds = bounds_wgs84(native_bounds, meta.crs)
             rows.append(

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
-from typing import Any, Iterator, Optional
 
 from geostat.provenance import code_revision, environment_snapshot, utcnow
 
@@ -61,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_kind ON assets(kind);
 """
 
 
-def connect(path: Optional[Path] = None, *, check_same_thread: bool = False) -> sqlite3.Connection:
+def connect(path: Path | None = None, *, check_same_thread: bool = False) -> sqlite3.Connection:
     path = path or Path(__import__("geostat.settings", fromlist=["DB_PATH"]).DB_PATH)
     conn = sqlite3.connect(str(path), timeout=60, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
@@ -97,14 +98,34 @@ def upsert_asset(conn: sqlite3.Connection, **cols: Any) -> str:
         [cols[k] for k in present],
     )
     conn.commit()
-    return cols["id"]
+    return str(cols["id"])
 
 
 ASSET_COLS = (
-    "id", "kind", "path", "sha256", "size_bytes", "dataset", "dataset_version",
-    "source_url", "license", "attribution", "crs", "width", "height", "band_count",
-    "dtype", "nodata", "resolution_x", "resolution_y", "minx", "miny", "maxx", "maxy",
-    "acquired_at", "meta_json",
+    "id",
+    "kind",
+    "path",
+    "sha256",
+    "size_bytes",
+    "dataset",
+    "dataset_version",
+    "source_url",
+    "license",
+    "attribution",
+    "crs",
+    "width",
+    "height",
+    "band_count",
+    "dtype",
+    "nodata",
+    "resolution_x",
+    "resolution_y",
+    "minx",
+    "miny",
+    "maxx",
+    "maxy",
+    "acquired_at",
+    "meta_json",
 )
 
 
@@ -146,26 +167,37 @@ def upsert_study_area(conn: sqlite3.Connection, sa_id: str, name: str, **cols: A
     conn.commit()
 
 
-def get_study_area(conn: sqlite3.Connection, sa_id: str) -> Optional[sqlite3.Row]:
-    row = conn.execute("SELECT * FROM study_areas WHERE id = ?", (sa_id,)).fetchone()
-    return row
+def get_study_area(conn: sqlite3.Connection, sa_id: str) -> sqlite3.Row | None:
+    return cast(
+        "sqlite3.Row | None",
+        conn.execute("SELECT * FROM study_areas WHERE id = ?", (sa_id,)).fetchone(),
+    )
 
 
 def list_study_areas(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM study_areas ORDER BY id"))
 
 
-def get_scene(conn: sqlite3.Connection, scene_id: str) -> Optional[sqlite3.Row]:
-    return conn.execute("SELECT * FROM scenes WHERE id = ?", (scene_id,)).fetchone()
+def get_scene(conn: sqlite3.Connection, scene_id: str) -> sqlite3.Row | None:
+    return cast(
+        "sqlite3.Row | None",
+        conn.execute("SELECT * FROM scenes WHERE id = ?", (scene_id,)).fetchone(),
+    )
 
 
-def list_scenes(conn: sqlite3.Connection, study_area_id: Optional[str] = None) -> list[sqlite3.Row]:
+def list_scenes(conn: sqlite3.Connection, study_area_id: str | None = None) -> list[sqlite3.Row]:
     if study_area_id:
-        return list(conn.execute("SELECT * FROM scenes WHERE study_area_id = ? ORDER BY id", (study_area_id,)))
+        return list(
+            conn.execute(
+                "SELECT * FROM scenes WHERE study_area_id = ? ORDER BY id", (study_area_id,)
+            )
+        )
     return list(conn.execute("SELECT * FROM scenes ORDER BY id"))
 
 
-def upsert_model(conn: sqlite3.Connection, model_id: str, kind: str, config_json: str, **cols: Any) -> str:
+def upsert_model(
+    conn: sqlite3.Connection, model_id: str, kind: str, config_json: str, **cols: Any
+) -> str:
     conn.execute(
         "INSERT INTO models (id, kind, config_json, checkpoint_path, checkpoint_sha256, summary_json, created_at, created_by_run)"
         " VALUES (?,?,?,?,?,?,?,?)"
@@ -186,23 +218,35 @@ def upsert_model(conn: sqlite3.Connection, model_id: str, kind: str, config_json
     return model_id
 
 
-def get_model(conn: sqlite3.Connection, model_id: str) -> Optional[sqlite3.Row]:
-    return conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
+def get_model(conn: sqlite3.Connection, model_id: str) -> sqlite3.Row | None:
+    return cast(
+        "sqlite3.Row | None",
+        conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone(),
+    )
 
 
 @contextmanager
 def begin_run(
     conn: sqlite3.Connection,
     kind: str,
-    config: Optional[dict] = None,
+    config: dict[str, Any] | None = None,
     *,
-    scene_id: Optional[str] = None,
-    model_id: Optional[str] = None,
-    run_id: Optional[str] = None,
-    notes: Optional[dict] = None,
+    scene_id: str | None = None,
+    model_id: str | None = None,
+    run_id: str | None = None,
+    notes: dict[str, Any] | None = None,
     console: bool = True,
-) -> Iterator["RunCtx"]:
-    ctx = RunCtx(conn, kind, config or {}, scene_id=scene_id, model_id=model_id, run_id=run_id, notes=notes, console=console)
+) -> Iterator[RunCtx]:
+    ctx = RunCtx(
+        conn,
+        kind,
+        config or {},
+        scene_id=scene_id,
+        model_id=model_id,
+        run_id=run_id,
+        notes=notes,
+        console=console,
+    )
     try:
         yield ctx
         ctx.finish()
@@ -216,12 +260,12 @@ class RunCtx:
         self,
         conn: sqlite3.Connection,
         kind: str,
-        config: Optional[dict] = None,
+        config: dict[str, Any] | None = None,
         *,
-        scene_id: Optional[str] = None,
-        model_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        notes: Optional[dict] = None,
+        scene_id: str | None = None,
+        model_id: str | None = None,
+        run_id: str | None = None,
+        notes: dict[str, Any] | None = None,
         console: bool = True,
     ) -> None:
         from geostat.settings import ensure_dirs
@@ -230,12 +274,14 @@ class RunCtx:
         self.conn = conn
         self.kind = kind
         self.console = console
-        self.run_id = run_id or f"{kind}-{utcnow().replace(':', '').replace('-', '')}-{uuid4().hex[:12]}"
+        self.run_id = (
+            run_id or f"{kind}-{utcnow().replace(':', '').replace('-', '')}-{uuid4().hex[:12]}"
+        )
         self.started_at = utcnow()
-        self.finished_at: Optional[str] = None
+        self.finished_at: str | None = None
         self.status = "started"
         self.artifact_paths: dict[str, str] = {}
-        self.error: Optional[str] = None
+        self.error: str | None = None
         rev = code_revision()
         self.code_revision = dumps(rev)
         self.config_json = dumps(config or {})
@@ -297,20 +343,24 @@ class RunCtx:
         if self.console:
             print(f"[run:{self.run_id}] FAILED: {err}")
 
-    def set_metrics(self, metrics: dict) -> None:
-        self.conn.execute("UPDATE runs SET metrics_json=? WHERE id=?", (dumps(metrics), self.run_id))
+    def set_metrics(self, metrics: dict[str, Any]) -> None:
+        self.conn.execute(
+            "UPDATE runs SET metrics_json=? WHERE id=?", (dumps(metrics), self.run_id)
+        )
         self.conn.commit()
 
 
-def get_run(conn: sqlite3.Connection, run_id: str) -> Optional[sqlite3.Row]:
-    return conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+def get_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:
+    return cast(
+        "sqlite3.Row | None", conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    )
 
 
 def list_runs(
     conn: sqlite3.Connection,
-    kind: Optional[str] = None,
-    scene_id: Optional[str] = None,
-    status: Optional[str] = None,
+    kind: str | None = None,
+    scene_id: str | None = None,
+    status: str | None = None,
     limit: int = 50,
 ) -> list[sqlite3.Row]:
     q = "SELECT * FROM runs WHERE 1=1"
@@ -329,14 +379,16 @@ def list_runs(
     return list(conn.execute(q, args))
 
 
-def latest_run_kind(conn: sqlite3.Connection, kind: str, scene_id: Optional[str] = None) -> Optional[sqlite3.Row]:
+def latest_run_kind(
+    conn: sqlite3.Connection, kind: str, scene_id: str | None = None
+) -> sqlite3.Row | None:
     q = "SELECT * FROM runs WHERE kind = ? AND status = 'completed'"
     args: list[Any] = [kind]
     if scene_id:
         q += " AND scene_id = ?"
         args.append(scene_id)
     q += " ORDER BY started_at DESC, rowid DESC LIMIT 1"
-    return conn.execute(q, args).fetchone()
+    return cast("sqlite3.Row | None", conn.execute(q, args).fetchone())
 
 
 def run_events(conn: sqlite3.Connection, run_id: str, limit: int = 200) -> list[sqlite3.Row]:
@@ -348,7 +400,9 @@ def run_events(conn: sqlite3.Connection, run_id: str, limit: int = 200) -> list[
     )
 
 
-def audit(conn: sqlite3.Connection, actor: str, action: str, details: Optional[dict] = None) -> None:
+def audit(
+    conn: sqlite3.Connection, actor: str, action: str, details: dict[str, Any] | None = None
+) -> None:
     conn.execute(
         "INSERT INTO audit (ts, actor, action, details_json) VALUES (?,?,?,?)",
         (utcnow(), actor, action, dumps(details) if details else None),
@@ -357,7 +411,11 @@ def audit(conn: sqlite3.Connection, actor: str, action: str, details: Optional[d
 
 
 def upsert_exposure(
-    conn: sqlite3.Connection, run_id: str, scene_id: str, summary: dict, osm_dataset_date: str
+    conn: sqlite3.Connection,
+    run_id: str,
+    scene_id: str,
+    summary: dict[str, Any],
+    osm_dataset_date: str,
 ) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO exposures (run_id, scene_id, summary_json, osm_dataset_date) VALUES (?,?,?,?)",

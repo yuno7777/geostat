@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from geostat.metrics import MetricsError, confusion_counts, from_counts, per_pixels_report
+from geostat.metrics import MetricsError, confusion_counts, from_counts
 
 
 def test_confusion_counts_perfect():
@@ -53,3 +53,9 @@ def test_zero_division():
     assert m["precision"] == 0.0
     assert m["recall"] == 0.0
     assert m["iou"] == 0.0
+
+
+def test_prevalence_counts_missed_water():
+    from geostat.metrics import from_counts
+
+    assert from_counts({"tp": 1, "fp": 0, "fn": 2, "tn": 1})["prevalence"] == 0.75

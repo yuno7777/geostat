@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import rasterio
-from rasterio.windows import Window
 import torch
+from numpy.typing import NDArray
+from rasterio.windows import Window
 
 import geostat.settings as settings
-from geostat import db, geoio, metrics
+from geostat import geoio, metrics
 from geostat.dataset import normalize_db
-from geostat.settings import ARTIFACTS_DIR, RAW_DIR, DATASET_NAME, DATASET_VERSION
+from geostat.settings import DATASET_NAME, DATASET_VERSION, RAW_DIR
 from geostat.unet import DOWNSAMPLE_FACTOR, SmallUNet
-from geostat.provenance import sha256_hex
 
 
 class InferenceError(RuntimeError):
@@ -33,9 +32,9 @@ def infer_scene_prob_map(
     scene: str,
     *,
     tile_size: int = 256,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     threshold: float = 0.5,
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+) -> tuple[NDArray[Any], NDArray[Any], dict[str, Any]]:
     if type(tile_size) is not int or tile_size <= 0:
         raise InferenceError("tile_size must be a positive integer")
     if not math.isfinite(threshold) or not 0 <= threshold <= 1:
@@ -55,8 +54,10 @@ def infer_scene_prob_map(
         for row in range(0, height, tile_size):
             for col in range(0, width, tile_size):
                 h, w = min(tile_size, height - row), min(tile_size, width - col)
-                area = np.s_[row:row+h, col:col+w]
-                samples = geoio.read_pixels(source, (1, 2), window=Window(col, row, w, h), as_float=True)
+                area = np.s_[row : row + h, col : col + w]
+                samples = geoio.read_pixels(
+                    source, (1, 2), window=Window(col, row, w, h), as_float=True
+                )
                 usable = np.isfinite(samples).any(axis=0)
                 valid[area] = usable
                 tiles += 1
@@ -66,12 +67,16 @@ def infer_scene_prob_map(
                 padded[0, :, :h, :w] = np.nan_to_num(normalize_db(samples), nan=0.0)
                 logits = model(torch.from_numpy(padded).to(dev))
                 if logits.shape != (1, 1, processing_size, processing_size):
-                    raise InferenceError("model must return logits with shape (1, 1, padded height, padded width)")
+                    raise InferenceError(
+                        "model must return logits with shape (1, 1, padded height, padded width)"
+                    )
                 prediction = torch.sigmoid(logits)[0, 0, :h, :w].cpu().numpy()
                 if not np.isfinite(prediction[usable]).all():
-                    raise InferenceError(f"model produced a nonfinite probability for scene {scene}")
+                    raise InferenceError(
+                        f"model produced a nonfinite probability for scene {scene}"
+                    )
                 np.copyto(prob[area], prediction, where=usable)
-    stats = {
+    stats: dict[str, Any] = {
         "tile_size": tile_size,
         "tiles": tiles,
         "valid_frac": float(valid.mean()),
@@ -95,7 +100,9 @@ def export_scene_flood(
     channels = tuple(int(c) for c in state["channels"])
     model = SmallUNet(in_ch=2, out_ch=1, channels=channels)
     model.load_state_dict(state["state_dict"])
-    prob, valid, stats = infer_scene_prob_map(model, scene, tile_size=tile_size, threshold=threshold)
+    prob, valid, stats = infer_scene_prob_map(
+        model, scene, tile_size=tile_size, threshold=threshold
+    )
     mask = ((prob >= threshold) & valid).astype(np.uint8)
     mask[~valid] = 255
 
@@ -149,5 +156,7 @@ def export_scene_flood(
     run.add_artifact("prob_cog", prob_path)
     run.add_artifact("mask_cog", mask_path)
     run.add_artifact("flood_geojson", geojson_path)
-    run.set_metrics({k: v for k, v in result.items() if k not in ("prob_cog", "mask_cog", "geojson", "stats")})
+    run.set_metrics(
+        {k: v for k, v in result.items() if k not in ("prob_cog", "mask_cog", "geojson", "stats")}
+    )
     return result

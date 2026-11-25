@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, asdict
+from collections.abc import Iterator, Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, cast
 
 import numpy as np
 import rasterio
+from numpy.typing import NDArray
 from rasterio import features
 from rasterio.windows import Window
-from shapely.geometry import mapping, shape
 from shapely import make_valid
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import MultiPolygon, Polygon, mapping, shape
 from shapely.geometry.base import BaseGeometry
-
 
 from geostat.spatial import polygons_wgs84
 from geostat.spatial import wgs84_area_m2 as wgs84_area_m2
@@ -36,14 +36,14 @@ class RasterMeta:
     height: int
     band_count: int
     dtype: str
-    nodata: Optional[float]
+    nodata: float | None
     has_nan_nodata: bool
     resolution_x: float
     resolution_y: float
     transform: tuple[float, float, float, float, float, float]
     bounds: tuple[float, float, float, float]
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {**asdict(self), "nodata": None if self.has_nan_nodata else self.nodata}
 
     @property
@@ -69,9 +69,17 @@ def raster_meta(ds: rasterio.DatasetReader) -> RasterMeta:
         has_nan_nodata=bool(nodata is not None and math.isnan(nodata)),
         resolution_x=float(ds.transform.a),
         resolution_y=float(abs(ds.transform.e)),
-        transform=tuple(float(v) for v in ds.transform[:6]),
-        bounds=tuple(float(v) for v in ds.bounds),
+        transform=(
+            ds.transform.a,
+            ds.transform.b,
+            ds.transform.c,
+            ds.transform.d,
+            ds.transform.e,
+            ds.transform.f,
+        ),
+        bounds=(ds.bounds.left, ds.bounds.bottom, ds.bounds.right, ds.bounds.top),
     )
+
 
 def _close(a: float, b: float, atol: float) -> bool:
     return abs(a - b) <= atol
@@ -79,13 +87,15 @@ def _close(a: float, b: float, atol: float) -> bool:
 
 def assert_alignment(
     image_raster: RasterMeta, label_raster: RasterMeta, atol: float = 1e-9
-) -> dict:
+) -> dict[str, Any]:
     problems: list[str] = []
     if not math.isfinite(atol) or atol < 0:
         raise ValueError("alignment tolerance must be finite and nonnegative")
     if "unknown" in (image_raster.crs, label_raster.crs):
         problems.append("both rasters must declare a CRS")
-    elif rasterio.crs.CRS.from_user_input(image_raster.crs) != rasterio.crs.CRS.from_user_input(label_raster.crs):
+    elif rasterio.crs.CRS.from_user_input(image_raster.crs) != rasterio.crs.CRS.from_user_input(
+        label_raster.crs
+    ):
         problems.append(f"CRS mismatch: image='{image_raster.crs}' label='{label_raster.crs}'")
     if (image_raster.width, image_raster.height) != (label_raster.width, label_raster.height):
         problems.append(
@@ -101,7 +111,7 @@ def assert_alignment(
     for idx, (a, b) in enumerate(zip(img_t, lbl_t, strict=True)):
         if not _close(a, b, atol):
             problems.append(f"transform[{idx}] mismatch: {a} vs {b} (atol {atol})")
-    for idx, (a, b) in enumerate(zip(image_raster.bounds, label_raster.bounds)):
+    for idx, (a, b) in enumerate(zip(image_raster.bounds, label_raster.bounds, strict=True)):
         if not _close(a, b, 1e-6):
             problems.append(f"bounds[{idx}] mismatch: {a} vs {b}")
     report = {
@@ -119,7 +129,7 @@ def read_pixels(
     *,
     window: Window | None = None,
     as_float: bool = False,
-) -> np.ndarray:
+) -> NDArray[Any]:
     """Read GDAL-masked data as float32/NaN (SAR), or preserve integer labels with -1."""
     if window is not None and (
         min(window.row_off, window.col_off) < 0
@@ -132,25 +142,33 @@ def read_pixels(
     if as_float or pixels.dtype.kind == "f":
         values = pixels.astype(np.float32).filled(np.nan)
         values[~np.isfinite(values)] = np.nan
-        return values
-    if not np.ma.getmaskarray(pixels).any():
-        return pixels.data
+        return cast("NDArray[Any]", values)
+    if not np.any(pixels.mask):
+        return cast("NDArray[Any]", pixels.data)
     if pixels.dtype.kind == "u":
         if pixels.dtype.itemsize == 8:
-            raise GeoError("masked uint64 pixels cannot be represented with a signed nodata sentinel")
+            raise GeoError(
+                "masked uint64 pixels cannot be represented with a signed nodata sentinel"
+            )
         pixels = pixels.astype(f"int{pixels.dtype.itemsize * 16}")
-    return pixels.filled(-1)
+    return cast("NDArray[Any]", pixels.filled(-1))
 
 
 def read_window(
-    path: Path, row: int, col: int, height: int, width: int,
-    bands: Sequence[int] | None = None, *, as_float: bool = False,
-) -> np.ndarray:
+    path: Path,
+    row: int,
+    col: int,
+    height: int,
+    width: int,
+    bands: Sequence[int] | None = None,
+    *,
+    as_float: bool = False,
+) -> NDArray[Any]:
     with rasterio.open(path) as ds:
         return read_pixels(ds, bands, window=Window(col, row, width, height), as_float=as_float)
 
 
-def labels(path: Path) -> np.ndarray:
+def labels(path: Path) -> NDArray[Any]:
     with rasterio.open(path) as ds:
         return read_pixels(ds, 1)
 
@@ -169,7 +187,11 @@ def label_value_counts(path: Path) -> dict[str, int]:
             values, frequencies = np.unique(arr, return_counts=True)
             for value, count in zip(values, frequencies, strict=True):
                 number = value.item()
-                key = str(int(number)) if math.isfinite(number) and number == int(number) else str(number)
+                key = (
+                    str(int(number))
+                    if math.isfinite(number) and number == int(number)
+                    else str(number)
+                )
                 if key == "nan":
                     key = "-1"
                 counts[key] = counts.get(key, 0) + int(count)
@@ -179,13 +201,17 @@ def label_value_counts(path: Path) -> dict[str, int]:
 def missing_sar_fraction(path: Path) -> float:
     with rasterio.open(path) as ds:
         missing = sum(
-            int(np.count_nonzero(np.isnan(read_pixels(ds, window=window, as_float=True)).all(axis=0)))
+            int(
+                np.count_nonzero(
+                    np.isnan(read_pixels(ds, window=window, as_float=True)).all(axis=0)
+                )
+            )
             for window in _windows(ds)
         )
-        return missing / (ds.width * ds.height)
+        return missing / (int(ds.width) * int(ds.height))
 
 
-def water_fracs(mask: np.ndarray) -> tuple[float, float]:
+def water_fracs(mask: NDArray[Any]) -> tuple[float, float]:
     valid = np.isfinite(mask) & (mask != -1)
     n_val = int(valid.sum())
     if n_val == 0:
@@ -193,7 +219,9 @@ def water_fracs(mask: np.ndarray) -> tuple[float, float]:
     return (n_val / mask.size, int(np.count_nonzero(mask == 1)) / n_val)
 
 
-def polygonize_water(mask: np.ndarray, transform: Sequence[float], buffer0_if_invalid: bool = True) -> list[BaseGeometry]:
+def polygonize_water(
+    mask: NDArray[Any], transform: Sequence[float], buffer0_if_invalid: bool = True
+) -> list[BaseGeometry]:
     if mask.ndim != 2:
         raise GeoError("water mask must be two-dimensional")
     if not mask.size:
@@ -220,7 +248,7 @@ def polygonize_water(mask: np.ndarray, transform: Sequence[float], buffer0_if_in
 
 def write_raster(
     path: Path,
-    data: np.ndarray,
+    data: NDArray[Any],
     transform: Sequence[float],
     crs: str,
     nodata: float,
@@ -246,7 +274,7 @@ def write_raster(
 
 
 def load_json(path: Path) -> Any:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -256,18 +284,27 @@ def save_json(path: Path, payload: Any, *, sort_keys: bool = True) -> None:
     try:
         with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as f:
             tmp_path = Path(f.name)
-            json.dump(payload, f, sort_keys=sort_keys, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+            json.dump(
+                payload,
+                f,
+                sort_keys=sort_keys,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
         tmp_path.replace(path)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
 
 
-def feature_collection(features_list: list[dict]) -> dict:
+def feature_collection(features_list: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "FeatureCollection", "features": features_list}
 
 
-def geometry_feature(geom: BaseGeometry, properties: Optional[dict] = None) -> dict:
+def geometry_feature(
+    geom: BaseGeometry, properties: dict[str, Any] | None = None
+) -> dict[str, Any]:
     props = properties or {}
     return {
         "type": "Feature",
@@ -287,16 +324,20 @@ def simplify_geoms(geoms: Sequence[BaseGeometry], tolerance: float) -> list[Base
 
 
 def water_feature_collection(
-    mask: np.ndarray, meta: RasterMeta, properties: dict[str, Any],
+    mask: NDArray[Any],
+    meta: RasterMeta,
+    properties: dict[str, Any],
 ) -> dict[str, Any]:
     if meta.crs == "unknown":
         raise GeoError("water polygon export requires a raster CRS")
     geoms = polygonize_water(mask, meta.transform)
-    return feature_collection([
-        geometry_feature(piece, properties)
-        for geom in geoms
-        for piece in polygons_wgs84(geom, meta.crs)
-    ])
+    return feature_collection(
+        [
+            geometry_feature(piece, properties)
+            for geom in geoms
+            for piece in polygons_wgs84(geom, meta.crs)
+        ]
+    )
 
 
 def iter_rasters(paths: Sequence[Path]) -> Iterator[rasterio.DatasetReader]:

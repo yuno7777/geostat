@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import random
 from collections import OrderedDict
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import rasterio
-from rasterio.windows import Window
 import torch
+from numpy.typing import NDArray
+from rasterio.windows import Window
 from torch.utils.data import Dataset
 
 import geostat.settings as settings
@@ -19,13 +19,13 @@ DB_CLIP_MIN = -30.0
 DB_CLIP_MAX = 5.0
 
 
-def normalize_db(x: np.ndarray) -> np.ndarray:
+def normalize_db(x: NDArray[Any]) -> NDArray[Any]:
     clipped = np.clip(x, DB_CLIP_MIN, DB_CLIP_MAX)
     normed = (clipped - DB_CLIP_MIN) / (DB_CLIP_MAX - DB_CLIP_MIN)
     return normed.astype(np.float32)
 
 
-def unnormalize_db(normed: np.ndarray) -> np.ndarray:
+def unnormalize_db(normed: NDArray[Any]) -> NDArray[Any]:
     return normed * (DB_CLIP_MAX - DB_CLIP_MIN) + DB_CLIP_MIN
 
 
@@ -59,7 +59,9 @@ class FloodTileDataset(Dataset[Any]):
         self.augment = augment
         self.seed = seed
         self.cache_sources = cache_sources
-        self._ds_cache: OrderedDict[str, tuple[rasterio.DatasetReader, rasterio.DatasetReader]] = OrderedDict()
+        self._ds_cache: OrderedDict[str, tuple[rasterio.DatasetReader, rasterio.DatasetReader]] = (
+            OrderedDict()
+        )
 
     def __len__(self) -> int:
         return len(self.tiles)
@@ -76,7 +78,9 @@ class FloodTileDataset(Dataset[Any]):
             try:
                 report = geoio.assert_alignment(geoio.raster_meta(s1), geoio.raster_meta(labels))
                 if not report["aligned"]:
-                    raise geoio.GeoError(f"scene {scene} reference alignment failed: {report['problems']}")
+                    raise geoio.GeoError(
+                        f"scene {scene} reference alignment failed: {report['problems']}"
+                    )
                 if s1.count != 2 or labels.count != 1:
                     raise geoio.GeoError(f"scene {scene} requires two SAR bands and one label band")
             except BaseException:
@@ -109,16 +113,18 @@ class FloodTileDataset(Dataset[Any]):
                 radar.close()
                 labels.close()
         valid = np.isin(lab, (0, 1)) & np.isfinite(sar).any(axis=0)
-        s1 = np.zeros((2, self._size, self._size), dtype=np.float32)
-        y = np.zeros((self._size, self._size), dtype=np.float32)
-        mask = np.zeros_like(y)
+        s1: NDArray[np.float32] = np.zeros((2, self._size, self._size), dtype=np.float32)
+        y: NDArray[np.float32] = np.zeros((self._size, self._size), dtype=np.float32)
+        mask: NDArray[np.float32] = np.zeros_like(y)
         s1[:, :h, :w] = np.nan_to_num(normalize_db(sar), nan=0.0)
         y[:h, :w] = lab == 1
         mask[:h, :w] = valid
         if self.augment:
             rng = random.Random(self.seed * 100003 + idx)
             k = rng.randrange(4)
-            spatial_slice = np.s_[::(-1 if rng.randrange(2) == 0 else 1), ::(-1 if rng.randrange(2) == 0 else 1)]
+            spatial_slice = np.s_[
+                :: (-1 if rng.randrange(2) == 0 else 1), :: (-1 if rng.randrange(2) == 0 else 1)
+            ]
             s1 = np.ascontiguousarray(np.rot90(s1, k, axes=(1, 2))[(slice(None), *spatial_slice)])
             y = np.ascontiguousarray(np.rot90(y, k)[spatial_slice])
             mask = np.ascontiguousarray(np.rot90(mask, k)[spatial_slice])
@@ -126,7 +132,14 @@ class FloodTileDataset(Dataset[Any]):
         y_t = torch.from_numpy(y)
         mask_t = torch.from_numpy(mask)
         if self.return_metadata:
-            return {"x": x_t, "y": y_t, "mask": mask_t, "scene": scene, "tile_id": tile["tile_id"], "event": tile.get("event")}
+            return {
+                "x": x_t,
+                "y": y_t,
+                "mask": mask_t,
+                "scene": scene,
+                "tile_id": tile["tile_id"],
+                "event": tile.get("event"),
+            }
         return (x_t, y_t, mask_t)
 
     def close(self) -> None:

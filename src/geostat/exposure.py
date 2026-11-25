@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from shapely.geometry import LineString, Polygon, shape
 from shapely.geometry.base import BaseGeometry
@@ -20,12 +20,23 @@ from geostat.provenance import utcnow
 from geostat.spatial import BBox, FloodIndex, wgs84_area_m2, wgs84_length_m
 
 OSM_UA = "GeoStat/0.1 (research; contact via GitHub repo)"
-OSM_TIMEOUT_S = 180
+OSM_TIMEOUT_S = 135
 OSM_RETRIES = 3
-OSM_RETRY_SLEEP = 8.0
+OSM_RETRY_SLEEP = 1.0
 HIGHWAY_CLASSES = {
-    "motorway", "trunk", "primary", "secondary", "tertiary", "residential",
-    "service", "unclassified", "track", "footway", "path", "cycleway", "pedestrian",
+    "motorway",
+    "trunk",
+    "primary",
+    "secondary",
+    "tertiary",
+    "residential",
+    "service",
+    "unclassified",
+    "track",
+    "footway",
+    "path",
+    "cycleway",
+    "pedestrian",
 }
 
 
@@ -43,9 +54,7 @@ def _query_bounds(bbox: BBox) -> tuple[BBox, ...]:
     if west == east or (west == 180 and east == -180):
         raise ValueError("OSM bounds must have a positive longitude width")
     if east < west:
-        return tuple(
-            (w, south, e, north) for w, e in ((west, 180.0), (-180.0, east)) if w < e
-        )
+        return tuple((w, south, e, north) for w, e in ((west, 180.0), (-180.0, east)) if w < e)
     return (bbox,)
 
 
@@ -57,23 +66,30 @@ def build_overpass_query(bbox: BBox) -> str:
     return "[out:json][timeout:120];(" + "".join(terms) + ");out body geom;"
 
 
-def fetch_overpass(bbox: tuple[float, float, float, float], scene: str, *, refresh: bool = False) -> tuple[dict[str, Any], Path]:
+def fetch_overpass(
+    bbox: tuple[float, float, float, float], scene: str, *, refresh: bool = False
+) -> tuple[dict[str, Any], Path]:
     d = cache_dir(scene)
     resp_path = d / "response.json"
     meta_path = d / "response_meta.json"
     query = build_overpass_query(bbox)
     url = settings.OVERPASS_URL
     if resp_path.exists() and meta_path.exists() and not refresh:
-        meta = geoio.load_json(meta_path)
+        payload = geoio.load_json(resp_path)
+        meta = payload.get("_geostat_meta") or geoio.load_json(meta_path)
         if meta.get("bbox_wgs84") == list(bbox):
-            return geoio.load_json(resp_path), meta_path
+            return payload, meta_path
     data = urllib.parse.urlencode({"data": query, "info": "true"}).encode()
-    last: Optional[Exception] = None
+    last: Exception | None = None
     for attempt in range(1, OSM_RETRIES + 1):
         try:
-            req = urllib.request.Request(url, data=data, headers={"User-Agent": OSM_UA}, method="POST")
-            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - URL from settings only
+            req = urllib.request.Request(
+                url, data=data, headers={"User-Agent": OSM_UA}, method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=OSM_TIMEOUT_S) as resp:  # noqa: S310 - URL from settings only
                 payload = json.load(resp)
+            if payload.get("remark") or not isinstance(payload.get("elements"), list):
+                raise OSError(f"Overpass returned an incomplete response: {payload.get('remark')}")
             meta = {
                 "scene": scene,
                 "bbox_wgs84": list(bbox),
@@ -84,16 +100,19 @@ def fetch_overpass(bbox: tuple[float, float, float, float], scene: str, *, refre
                 "status": resp.status,
                 "elements": len(payload.get("elements", [])),
             }
+            payload["_geostat_meta"] = meta
             geoio.save_json(resp_path, payload)
             geoio.save_json(meta_path, meta)
             return payload, meta_path
         except Exception as exc:  # noqa: BLE001
             last = exc
             if attempt < OSM_RETRIES:
-                time.sleep(1.0)
+                time.sleep(OSM_RETRY_SLEEP)
     # Fallback to official OSM 0.6 map API
     if len(_query_bounds(bbox)) != 1:
-        raise OSError(f"Overpass is required for an antimeridian-crossing scene {scene}: {last}") from last
+        raise OSError(
+            f"Overpass is required for an antimeridian-crossing scene {scene}: {last}"
+        ) from last
     try:
         minx, miny, maxx, maxy = _query_bounds(bbox)[0]
         osm_url = f"https://api.openstreetmap.org/api/0.6/map?bbox={minx:.6f},{miny:.6f},{maxx:.6f},{maxy:.6f}"
@@ -101,13 +120,19 @@ def fetch_overpass(bbox: tuple[float, float, float, float], scene: str, *, refre
         with urllib.request.urlopen(req, timeout=30) as resp:
             xml_data = resp.read()
         import xml.etree.ElementTree as ET
+
         root = ET.fromstring(xml_data)
-        nodes = {n.attrib["id"]: {"lat": float(n.attrib["lat"]), "lon": float(n.attrib["lon"])} for n in root.findall("node")}
+        nodes = {
+            n.attrib["id"]: {"lat": float(n.attrib["lat"]), "lon": float(n.attrib["lon"])}
+            for n in root.findall("node")
+        }
         elements = []
         for w in root.findall("way"):
             geom = [nodes[nd.attrib["ref"]] for nd in w.findall("nd") if nd.attrib["ref"] in nodes]
             tags = {t.attrib["k"]: t.attrib["v"] for t in w.findall("tag")}
-            elements.append({"type": "way", "id": int(w.attrib["id"]), "tags": tags, "geometry": geom})
+            elements.append(
+                {"type": "way", "id": int(w.attrib["id"]), "tags": tags, "geometry": geom}
+            )
         payload = {"elements": elements}
         meta = {
             "scene": scene,
@@ -119,12 +144,13 @@ def fetch_overpass(bbox: tuple[float, float, float, float], scene: str, *, refre
             "status": 200,
             "elements": len(elements),
         }
+        payload["_geostat_meta"] = meta
         geoio.save_json(resp_path, payload)
         geoio.save_json(meta_path, meta)
         return payload, meta_path
     except Exception as exc:
         last = exc
-    raise IOError(f"overpass fetch failed for {scene}: {last}")
+    raise OSError(f"overpass fetch failed for {scene}: {last}")
 
 
 def parse_osm_elements(elements: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -135,8 +161,11 @@ def parse_osm_elements(elements: list[dict[str, Any]]) -> dict[str, list[dict[st
         geometry = el.get("geometry") or []
         coords = [(g["lon"], g["lat"]) for g in geometry if "lon" in g and "lat" in g]
         if not coords or any(
-            not isinstance(lon, (float, int)) or not isinstance(lat, (float, int))
-            or not -180 <= lon <= 180 or not -90 <= lat <= 90 for lon, lat in coords
+            not isinstance(lon, (float, int))
+            or not isinstance(lat, (float, int))
+            or not -180 <= lon <= 180
+            or not -90 <= lat <= 90
+            for lon, lat in coords
         ):
             continue
         el_type = el.get("type")
@@ -153,13 +182,15 @@ def parse_osm_elements(elements: list[dict[str, Any]]) -> dict[str, list[dict[st
                 continue
             if not geom.is_valid:
                 continue
-            roads.append({
-                "id": f"osm:{el.get('type')}/{el.get('id')}",
-                "smth": None,
-                "highway": highway,
-                "name": tags.get("name"),
-                "geometry": geom,
-            })
+            roads.append(
+                {
+                    "id": f"osm:{el.get('type')}/{el.get('id')}",
+                    "smth": None,
+                    "highway": highway,
+                    "name": tags.get("name"),
+                    "geometry": geom,
+                }
+            )
         elif building:
             if len(coords) < 4:
                 continue
@@ -171,12 +202,14 @@ def parse_osm_elements(elements: list[dict[str, Any]]) -> dict[str, list[dict[st
                 geom = geom.buffer(0)
             if geom.is_empty or not geom.is_valid:
                 continue
-            buildings.append({
-                "id": f"osm:{el.get('type')}/{el.get('id')}",
-                "building": building if isinstance(building, str) else "yes",
-                "name": tags.get("name"),
-                "geometry": geom,
-            })
+            buildings.append(
+                {
+                    "id": f"osm:{el.get('type')}/{el.get('id')}",
+                    "building": building if isinstance(building, str) else "yes",
+                    "name": tags.get("name"),
+                    "geometry": geom,
+                }
+            )
     return {"roads": roads, "buildings": buildings}
 
 
@@ -222,12 +255,14 @@ def exposure_summary(
                 continue
             n_buildings_flooded += 1
             if len(flooded_buildings) < 50:
-                flooded_buildings.append({
-                    "id": building["id"],
-                    "building": building.get("building"),
-                    "name": building.get("name"),
-                    "flooded_area_m2": round(area, 1),
-                })
+                flooded_buildings.append(
+                    {
+                        "id": building["id"],
+                        "building": building.get("building"),
+                        "name": building.get("name"),
+                        "flooded_area_m2": round(area, 1),
+                    }
+                )
             yield area
 
     flooded_area_m2 = math.fsum(building_areas())
@@ -239,7 +274,9 @@ def exposure_summary(
             "flooded_km": round(road_flooded_m / 1000.0, 3),
             "segments_total": len(roads),
             "segments_flooded": n_road_flooded,
-            "flooded_by_class": {key: round(value, 1) for key, value in road_classes_flooded.items()},
+            "flooded_by_class": {
+                key: round(value, 1) for key, value in road_classes_flooded.items()
+            },
         },
         "buildings": {
             "total": len(buildings),
@@ -265,9 +302,10 @@ def run_exposure(
     flood_polys = [shape(f["geometry"]) for f in fc["features"] if f.get("geometry") is not None]
     summary = exposure_summary(flood_polys, parsed["roads"], parsed["buildings"])
     summary["scene"] = scene
+    meta = payload.get("_geostat_meta") or geoio.load_json(meta_path)
     summary["osm"] = {
-        "retrieved_at": json.loads(meta_path.read_text(encoding="utf-8"))["retrieved_at"],
-        "url": settings.OVERPASS_URL,
+        "retrieved_at": meta["retrieved_at"],
+        "url": meta.get("url", settings.OVERPASS_URL),
         "license": "ODbL 1.0",
         "attribution": "© OpenStreetMap contributors",
         "unknown_relation_skipped": True,

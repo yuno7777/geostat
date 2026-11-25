@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
-from geostat import geoio, metrics
-from geostat.dataset import FloodTileDataset
-from geostat.settings import RAW_DIR, DATASET_NAME, DATASET_VERSION
-from pathlib import Path
+from geostat import geoio, metrics, settings
+from geostat.settings import DATASET_NAME, DATASET_VERSION, RAW_DIR
 
 
 class BaselineError(RuntimeError):
@@ -18,17 +18,30 @@ class BaselineError(RuntimeError):
 VH_BAND_INDEX = 1  # 0-based index into S1 band stack [VV, VH]
 
 
-def _tile_arrays(tile: dict[str, Any], band: int) -> tuple[np.ndarray, np.ndarray]:
-    s1_path = Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "S1Hand" / f"{tile['scene']}_S1Hand.tif"
-    lab_path = Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "LabelHand" / f"{tile['scene']}_LabelHand.tif"
-    s1 = geoio.read_window(s1_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"], bands=[band + 1], as_float=True)
-    lab = geoio.read_window(lab_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"])
+def _tile_arrays(tile: dict[str, Any], band: int) -> tuple[NDArray[Any], NDArray[Any]]:
+    scene = settings.path_component(tile["scene"], "scene")
+    s1_path = Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "S1Hand" / f"{scene}_S1Hand.tif"
+    lab_path = (
+        Path(RAW_DIR) / DATASET_NAME / DATASET_VERSION / "LabelHand" / f"{scene}_LabelHand.tif"
+    )
+    s1 = geoio.read_window(
+        s1_path,
+        tile["row_off"],
+        tile["col_off"],
+        tile["height"],
+        tile["width"],
+        bands=[band + 1],
+        as_float=True,
+    )
+    lab = geoio.read_window(
+        lab_path, tile["row_off"], tile["col_off"], tile["height"], tile["width"]
+    )
     if lab.ndim == 3 and lab.shape[0] == 1:
         lab = lab[0]
     vh = s1[0] if s1.ndim == 3 else s1
     valid = np.isin(lab, (0, 1)) & np.isfinite(vh)
     vh2 = vh.astype(np.float64, copy=False)
-    y_small = (lab == 1)
+    y_small = lab == 1
     return vh2[valid], y_small[valid]
 
 
@@ -54,7 +67,9 @@ def tune_threshold(
     n_pixels = 0
     train_tiles = [t for t in manifest["tiles"] if t["split"] == "train"]
     if not train_tiles:
-        raise BaselineError("manifest has no 'train' tiles; cannot tune baseline without training data")
+        raise BaselineError(
+            "manifest has no 'train' tiles; cannot tune baseline without training data"
+        )
     n_tiles_used = 0
     for t in train_tiles:
         vh, y_small = _tile_arrays(t, band)
@@ -78,12 +93,25 @@ def tune_threshold(
     iou = np.divide(tp, np.maximum(tp + fp + fn, 1))
     best_idx = int(np.argmax(iou))
     thr = float(thresholds[best_idx])
-    counts = {"tp": int(cum_water[best_idx]), "fp": int(cum_non_water[best_idx]), "fn": int(fn_per_t[best_idx]), "tn": int(n_pixels) - int(cum_water[best_idx]) - int(cum_non_water[best_idx]) - int(fn_per_t[best_idx])}
+    counts = {
+        "tp": int(cum_water[best_idx]),
+        "fp": int(cum_non_water[best_idx]),
+        "fn": int(fn_per_t[best_idx]),
+        "tn": int(n_pixels)
+        - int(cum_water[best_idx])
+        - int(cum_non_water[best_idx])
+        - int(fn_per_t[best_idx]),
+    }
     return {
         "threshold_db": thr,
         "band_index": band,
         "train_metrics": metrics.from_counts(counts),
-        "grid": {"lo": float(thresholds[0]), "hi": float(thresholds[-1]), "step": float(step), "n": int(len(thresholds))},
+        "grid": {
+            "lo": float(thresholds[0]),
+            "hi": float(thresholds[-1]),
+            "step": float(step),
+            "n": int(len(thresholds)),
+        },
         "train_tiles_used": n_tiles_used,
         "train_water_pixels": total_water,
         "n_valid_train_pixels": n_pixels,
@@ -91,7 +119,7 @@ def tune_threshold(
     }
 
 
-def predict_tile_vh(vh: np.ndarray, threshold_db: float) -> np.ndarray:
+def predict_tile_vh(vh: NDArray[Any], threshold_db: float) -> NDArray[Any]:
     pred = (np.nan_to_num(vh, nan=0.0) < threshold_db).astype(np.uint8)
     valid = np.isfinite(vh)
     pred[~valid] = 0
@@ -109,11 +137,14 @@ def eval_threshold_on_split(
             continue
         vh, truth = _tile_arrays(tile, VH_BAND_INDEX)
         pred = predict_tile_vh(vh, threshold_db)
-        entries.append({"event": tile.get("event"), "counts": metrics.confusion_counts(
-            pred, truth, np.ones(vh.shape, dtype=np.bool_)
-        )})
+        entries.append(
+            {
+                "event": tile.get("event"),
+                "counts": metrics.confusion_counts(pred, truth, np.ones(vh.shape, dtype=np.bool_)),
+            }
+        )
     agg = metrics.aggregate([e["counts"] for e in entries])
-    out = dict(agg)
+    out: dict[str, Any] = dict(agg)
     out["per_event"] = metrics.per_event_metrics(entries)
     out["n_tiles"] = len(entries)
     out["threshold_db"] = threshold_db
