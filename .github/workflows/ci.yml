@@ -23,3 +23,17 @@ jobs:
       - run: uv run --no-sync mypy
       - run: uv run --no-sync pytest
       - run: uv run --no-sync geostat --help
+
+  real-data-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.13.9'
+          enable-cache: true
+      - run: uv sync --locked --extra dev --python 3.12
+      - run: uv run --no-sync pytest tests/test_real_data_smoke.py
+        env:
+          GEOSTAT_REAL_DATA_SMOKE: '1'
