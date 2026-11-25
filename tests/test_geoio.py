@@ -139,3 +139,36 @@ def test_nodata_mask_is_exact_and_nonfinite_is_invalid(tmp_path):
 def test_alignment_requires_known_crs(synthetic_raster_pair):
     meta = replace(geoio.read_meta(synthetic_raster_pair[0]), crs="unknown")
     assert not geoio.assert_alignment(meta, meta)["aligned"]
+
+
+def test_disk_polygonization_preserves_seams_holes_and_connectivity(tmp_path):
+    from rasterio.features import rasterize
+    from shapely.geometry import shape
+
+    wet = np.zeros((40, 40), dtype=np.uint8)
+    wet[10:35, 10:35] = 1
+    wet[15:25, 15:25] = 0
+    wet[9, 9] = 1  # Diagonal contact alone is separate under four-way connectivity.
+    source = tmp_path / "wet mask.tif"
+    output = tmp_path / "wet shapes.geojson"
+    transform = rasterio.Affine(0.01, 0, 70, 0, -0.01, 20)
+    with rasterio.open(
+        source,
+        "w",
+        driver="GTiff",
+        dtype="uint8",
+        width=40,
+        height=40,
+        count=1,
+        crs="EPSG:4326",
+        transform=transform,
+        tiled=True,
+        blockxsize=16,
+        blockysize=16,
+    ) as dst:
+        for _, window in dst.block_windows(1):
+            dst.write(wet[window.toslices()], 1, window=window)
+    assert geoio.write_water_geojson(source, output) == 2
+    geoms = [shape(feature["geometry"]) for feature in geoio.load_json(output)["features"]]
+    assert sorted(len(g.interiors) for g in geoms) == [0, 1]
+    np.testing.assert_array_equal(rasterize(geoms, out_shape=wet.shape, transform=transform), wet)

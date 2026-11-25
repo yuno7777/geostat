@@ -78,7 +78,7 @@ print(result["roads"]["flooded_m"])
 - Rasters require a declared CRS and matching grids for pixelwise comparison. COGs keep their native CRS. GeoJSON exports use longitude, latitude in WGS84, with antimeridian polygons cut at the seam. Projected edges are sampled during conversion.
 - GDAL masks and raster nodata are applied before normalization. A pixel with neither SAR band available is invalid. Inference writes NaN in the float32 probability product and 255 in the uint8 mask. Border tiles are padded for the U-Net and cropped to the raster extent.
 - Exposure clips straight segments in a locally unwrapped longitude/latitude frame and measures clipped lengths and areas on the WGS84 ellipsoid. Geodesic measurement supports high latitudes. Polygon overlay assumes a local scene within a longitude span under 180° and rejects pole-enclosing or global flood polygons. OSM roads are measured over the fetched ways and may extend beyond the scene bounds. OSM relation geometries are outside the current way-based parser.
-- Raster scans and model input windows use bounded reads. Whole-scene prediction arrays and mask polygonization still require memory proportional to the scene. Overlay indexes flood polygons and dissolves intersecting candidates locally to avoid double-counting flood overlap.
+- Raster scans and model input windows use bounded reads. CLI scene export writes predictions and masks by window and streams GeoJSON from a complete on-disk wet mask. GDAL polygonization can still use substantial memory for complex boundaries. The Python array API retains both whole-scene arrays. Overlay indexes flood polygons and dissolves intersecting candidates locally to avoid double-counting flood overlap.
 - Re-run `analyze` for older outputs generated from projected rasters and run `exposure --refresh` afterward. The existing SQLite schema and WGS84 cache files remain readable.
 
 ## Benchmarks
@@ -111,7 +111,7 @@ uv run --locked --extra dev mypy
 uv run --locked --extra dev pytest
 ```
 
-CI runs these checks plus a CLI smoke test on Python 3.12 and 3.13 for pushes and pull requests. The test suite builds synthetic rasters and a temporary SQLite registry.
+CI runs these checks plus a CLI smoke test on Python 3.12 and 3.13 on Windows and Linux for pushes and pull requests. The test suite builds synthetic rasters and a temporary SQLite registry.
 
 ### Real-data smoke test
 
@@ -121,7 +121,11 @@ The separate CI smoke job processes the `Spain_7387658` Sen1Floods11 scene end t
 GEOSTAT_REAL_DATA_SMOKE=1 uv run --locked --extra dev pytest tests/test_real_data_smoke.py
 ```
 
+In PowerShell, set `$env:GEOSTAT_REAL_DATA_SMOKE = "1"` before running the same pytest command.
+
 An optional `GEOSTAT_SMOKE_DATA_DIR` points to a local directory containing the original TIFF filenames. Both files are verified against the same pins in either mode.
+
+See the [Windows and Linux roadmap](docs/ROADMAP.md) for milestones and acceptance checks.
 
 ## Attribution
 

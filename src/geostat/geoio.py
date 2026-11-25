@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -231,19 +231,48 @@ def polygonize_water(
     shapes_gen = features.shapes(
         mask_u8, mask=wet, transform=rasterio.Affine(*transform[:6]), connectivity=4
     )
-    geoms: list[BaseGeometry] = []
-    for geom, value in shapes_gen:
+    return list(_water_polygons(shapes_gen, buffer0_if_invalid))
+
+
+def _water_polygons(
+    shapes: Iterable[tuple[dict[str, Any], float]], repair_invalid: bool = True
+) -> Iterator[BaseGeometry]:
+    for geom, value in shapes:
         if int(value) != 1:
             continue
         g = shape(geom)
-        if not g.is_valid and buffer0_if_invalid:
+        if not g.is_valid and repair_invalid:
             fixed = make_valid(g)
             parts = [p for p in getattr(fixed, "geoms", (fixed,)) if isinstance(p, Polygon)]
             g = MultiPolygon(parts) if len(parts) > 1 else parts[0] if parts else Polygon()
         if g.is_empty or not g.is_valid:
             raise GeoError("polygonization produced an invalid geometry")
-        geoms.append(g)
-    return geoms
+        yield g
+
+
+def write_water_geojson(wet_raster: Path, path: Path) -> int:
+    """Stream polygons from a 0/1 raster, with zero pixels excluded by the mask band."""
+    with rasterio.open(wet_raster) as source, path.open("w", encoding="utf-8") as output:
+        if source.crs is None:
+            raise GeoError("water polygon export requires a raster CRS")
+        band = rasterio.band(source, 1)
+        shapes = features.shapes(band, mask=band, transform=source.transform, connectivity=4)
+        output.write('{"type":"FeatureCollection","features":[')
+        count = 0
+        for geometry in _water_polygons(shapes):
+            for piece in polygons_wgs84(geometry, str(source.crs)):
+                if count:
+                    output.write(",")
+                json.dump(
+                    geometry_feature(piece, {"flood": 1}),
+                    output,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+                count += 1
+        output.write("]}")
+        return count
 
 
 def write_raster(
