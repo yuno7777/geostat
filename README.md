@@ -73,6 +73,31 @@ result = exposure_summary(
 print(result["roads"]["flooded_m"])
 ```
 
+### Batch analysis
+
+Use one completed training run for multiple registered scenes. Repeat `--scene`
+to select individual IDs or use `--all`. The command uses the same COG and
+GeoJSON exporter as `analyze`.
+
+```bash
+uv run geostat analyze-batch --run TRAIN_RUN_ID --scene Bolivia_103757 --scene Spain_7387658 --jobs 2 --retries 1 --summary batch.json
+```
+
+The same command works in PowerShell and Bash. Each worker processes one scene
+at a time. Default concurrency is one because each worker loads a model and
+has its own GDAL cache. Progress is printed to stderr. The optional JSON summary
+records completed, reused, failed, and pending scenes in selection order.
+
+Run the same command again to resume. A scene reuses its latest completed
+analysis when its input fingerprint matches and all three product files exist
+and are nonempty. The fingerprint covers the scene files and GDAL sidecars,
+checkpoint, tile size, threshold, source files, and runtime versions. Use
+`--force` to recompute. A retry is an additional attempt for one failed scene.
+
+Press Ctrl+C once to stop dispatching scenes and let active workers finish.
+Completed products remain reusable. Exit status is 0 for success, 1 when a scene
+fails, 2 for an invalid invocation, and 130 for an interrupted batch.
+
 ## Spatial conventions and scale
 
 - Rasters require a declared CRS and matching grids for pixelwise comparison. COGs keep their native CRS. GeoJSON exports use longitude, latitude in WGS84, with antimeridian polygons cut at the seam. Projected edges are sampled during conversion.

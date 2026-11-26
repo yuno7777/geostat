@@ -4,6 +4,8 @@ import argparse
 import json
 import sqlite3
 import sys
+from contextlib import closing
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -324,6 +326,46 @@ def cmd_analyze(ns: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_analyze_batch(ns: argparse.Namespace) -> int:
+    from geostat.batch import BatchModel, analyze_batch
+    from geostat.inference import _validate_options
+    from geostat.provenance import sha256_hex
+
+    if ns.jobs < 1 or ns.retries < 0:
+        raise ValueError("--jobs must be positive and --retries must be nonnegative")
+    with closing(db.connect()) as conn:
+        train_run = db.get_run(conn, ns.run)
+        if train_run is None or train_run["kind"] != "train" or train_run["status"] != "completed":
+            raise ValueError(f"expected a completed training run: {ns.run}")
+        model_id = _model_of_run(conn, ns.run)
+        if model_id is None:
+            raise ValueError(f"no model registered for run {ns.run}")
+        checkpoint = Path(_weights_of_run(conn, ns.run)).resolve()
+        threshold = float(json.loads(train_run["config_json"]).get("threshold", 0.5))
+        scenes = [str(row["id"]) for row in db.list_scenes(conn)] if ns.all_scenes else ns.scene
+    _validate_options(ns.tile_size, threshold)
+    model = BatchModel(model_id, checkpoint, sha256_hex(checkpoint), threshold, ns.tile_size)
+    results, cancelled = analyze_batch(
+        scenes,
+        model,
+        jobs=ns.jobs,
+        retries=ns.retries,
+        resume=not ns.force,
+    )
+    counts = {
+        state: sum(r.status == state for r in results)
+        for state in ("completed", "reused", "failed", "pending")
+    }
+    if ns.summary is not None:
+        ns.summary.parent.mkdir(parents=True, exist_ok=True)
+        geoio.save_json(
+            ns.summary,
+            {"cancelled": cancelled, "counts": counts, "scenes": [asdict(r) for r in results]},
+        )
+    print("analyze-batch " + ", ".join(f"{key}={value}" for key, value in counts.items()))
+    return 130 if cancelled else 1 if counts["failed"] else 0
+
+
 def cmd_exposure(ns: argparse.Namespace) -> int:
     from geostat import exposure
 
@@ -457,6 +499,24 @@ def main(argv: list[str] | None = None) -> int:
         "--run", required=True, help="a train run id (its model + threshold are reused)"
     )
     an.set_defaults(func=cmd_analyze)
+
+    batch = sub.add_parser("analyze-batch", help="export multiple scenes with retry and resume")
+    selection = batch.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--scene", action="append", help="registered scene ID, repeatable")
+    selection.add_argument(
+        "--all", action="store_true", dest="all_scenes", help="all registered scenes"
+    )
+    batch.add_argument("--run", required=True, help="completed training run ID")
+    batch.add_argument("--jobs", type=int, default=1, help="maximum concurrent scenes")
+    batch.add_argument(
+        "--retries", type=int, default=0, help="additional attempts per failed scene"
+    )
+    batch.add_argument("--tile-size", type=int, default=256)
+    batch.add_argument(
+        "--force", action="store_true", help="export even when matching products exist"
+    )
+    batch.add_argument("--summary", type=Path, help="write machine-readable outcomes to this path")
+    batch.set_defaults(func=cmd_analyze_batch)
 
     ex = sub.add_parser("exposure", help="OSM roads/buildings exposure for an analyzed scene")
     ex.add_argument("--scene", required=True)
