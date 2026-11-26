@@ -18,6 +18,7 @@ import numpy as np
 import pyproj
 import rasterio
 import shapely
+from _process_memory import peak_mib
 from rasterio import Affine
 from rasterio.windows import Window
 from shapely.geometry import LineString, box
@@ -31,49 +32,6 @@ SIZES = {
     "large": (10_000, 100_000, 4_096),
 }
 WORKLOADS = ("exposure", "raster-windowed", "raster-full")
-
-
-def _peak_mib() -> float:
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        class ProcessMemoryCounters(ctypes.Structure):
-            _fields_ = [
-                ("cb", wintypes.DWORD),
-                ("PageFaultCount", wintypes.DWORD),
-                ("PeakWorkingSetSize", ctypes.c_size_t),
-                ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t),
-                ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-
-        load_dll = vars(ctypes)["WinDLL"]
-        current_process = load_dll("kernel32", use_last_error=True).GetCurrentProcess
-        current_process.restype = wintypes.HANDLE
-        get_memory = load_dll("psapi", use_last_error=True).GetProcessMemoryInfo
-        get_memory.argtypes = [
-            wintypes.HANDLE,
-            ctypes.POINTER(ProcessMemoryCounters),
-            wintypes.DWORD,
-        ]
-        get_memory.restype = wintypes.BOOL
-        counters = ProcessMemoryCounters()
-        counters.cb = ctypes.sizeof(counters)
-        if not get_memory(current_process(), ctypes.byref(counters), counters.cb):
-            raise OSError("Could not read the process peak working set")
-        return int(counters.PeakWorkingSetSize) / 1024**2
-
-    import resource
-
-    # Linux reports KiB and macOS reports bytes.
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (
-        1024**2 if sys.platform == "darwin" else 1024
-    )
 
 
 def exposure_trial(polygons: int, assets: int) -> dict[str, float | int]:
@@ -102,7 +60,7 @@ def exposure_trial(polygons: int, assets: int) -> dict[str, float | int]:
     result = exposure_summary(floods, roads, buildings)
     return {
         "seconds": perf_counter() - start,
-        "peak_mib": _peak_mib(),
+        "peak_mib": peak_mib(),
         "roads_flooded": int(result["roads"]["segments_flooded"]),
         "buildings_flooded": int(result["buildings"]["flooded"]),
     }
@@ -144,7 +102,7 @@ def raster_trial(side: int, *, windowed: bool) -> dict[str, float]:
                 missing = float(np.isnan(pixels).all(axis=0).mean())
             return {
                 "seconds": perf_counter() - start,
-                "peak_mib": _peak_mib(),
+                "peak_mib": peak_mib(),
                 "missing_fraction": missing,
             }
 
