@@ -103,6 +103,8 @@ def _ram_gb() -> float | None:
 
 
 def _ram_gb_posix() -> float | None:
+    if sys.platform == "win32":
+        return None
     try:
         return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / (1024**3), 2)
     except Exception:
@@ -110,8 +112,6 @@ def _ram_gb_posix() -> float | None:
 
 
 def environment_snapshot() -> dict[str, Any]:
-    import os
-
     env: dict[str, Any] = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),

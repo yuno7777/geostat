@@ -111,3 +111,52 @@ def test_border_tiles_and_cog_nodata(tmp_path, monkeypatch):
         assert ds.read(1, masked=True).mask.sum() == 1
     flood = geoio.load_json(Path(result["geojson"]))["features"]
     assert 0 < shape(flood[0]["geometry"]).bounds[0] < 1
+
+
+def test_failed_polygon_export_leaves_no_published_products(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    import pytest
+
+    from geostat import db, inference, settings
+
+    raws = tmp_path / "raw"
+    root = tmp_path / "staged outputs"
+    monkeypatch.setattr(inference, "RAW_DIR", raws)
+    monkeypatch.setattr(settings, "runs_dir", lambda: root)
+    scene = raws / settings.DATASET_NAME / settings.DATASET_VERSION / "S1Hand"
+    scene.mkdir(parents=True)
+    with rasterio.open(
+        scene / "broken_S1Hand.tif",
+        "w",
+        driver="GTiff",
+        dtype="float32",
+        width=11,
+        height=19,
+        count=2,
+        crs="EPSG:4326",
+        transform=rasterio.Affine(0.01, 0, 70, 0, -0.01, 20),
+    ) as dest:
+        dest.write(np.full((2, 19, 11), -13, dtype=np.float32))
+
+    def broken_export(*args):
+        raise geoio.GeoError("simulated vector write failure")
+
+    monkeypatch.setattr(geoio, "write_water_geojson", broken_export)
+    with closing(db.connect(tmp_path / "registry.sqlite3")) as conn:
+        db.init_db(conn)
+        weights = tmp_path / "weights.pth"
+        model = SmallUNet(channels=(2, 4, 8, 16))
+        torch.save({"channels": [2, 4, 8, 16], "state_dict": model.state_dict()}, weights)
+        with pytest.raises(geoio.GeoError, match="simulated vector write failure"):
+            with db.begin_run(conn, "analyze", console=False) as run:
+                inference.export_scene_flood(
+                    conn,
+                    run,
+                    "broken",
+                    weights,
+                    tile_size=9,
+                    make_label_comparison=False,
+                )
+        assert db.get_run(conn, run.run_id)["status"] == "failed"
+    assert list(root.iterdir()) == []
