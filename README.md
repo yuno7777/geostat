@@ -113,6 +113,16 @@ uv run --locked --extra dev pytest
 
 CI runs these checks plus a CLI smoke test on Python 3.12 and 3.13 for pushes and pull requests. The test suite builds synthetic rasters and a temporary SQLite registry.
 
+### Real-data smoke test
+
+The separate CI smoke job processes the `Spain_7387658` Sen1Floods11 scene end to end. It pins both public TIFFs by GCS generation, file size and SHA-256, and uses three recorded OpenStreetMap ways for exposure. The deterministic test checkpoint produces a known mask to verify the two COGs, the GeoJSON round trip and the API. It does not measure model accuracy.
+
+```bash
+GEOSTAT_REAL_DATA_SMOKE=1 uv run --locked --extra dev pytest tests/test_real_data_smoke.py
+```
+
+An optional `GEOSTAT_SMOKE_DATA_DIR` points to a local directory containing the original TIFF filenames. Both files are verified against the same pins in either mode.
+
 ## Attribution
 
 Sen1Floods11 is credited to Bonafilia, Tellman, Anderson and Issenberg. Infrastructure data © OpenStreetMap contributors, available under the [Open Database License](https://www.openstreetmap.org/copyright). See the [data catalog](docs/DATA_CATALOG.md) for dataset attribution and the [API specification](docs/API_SPECIFICATION.md) for routes.

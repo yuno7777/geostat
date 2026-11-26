@@ -1,0 +1,77 @@
+{
+  "_geostat_meta": {
+    "scene": "Spain_7387658",
+    "bbox_wgs84": [
+      -0.7818936232976315,
+      38.12881257139627,
+      -0.735899880750712,
+      38.174806313943186
+    ],
+    "url": "https://api.openstreetmap.org/api/0.6/map",
+    "query": "https://api.openstreetmap.org/api/0.6/map?bbox=-0.78189363,38.12881257,-0.73589988,38.17480632",
+    "retrieved_at": "2026-11-25T19:06:16Z",
+    "attribution": "© OpenStreetMap contributors (ODbL 1.0)",
+    "subset": "Three ways from the recorded map response: one contained road, one crossing road, and one contained building."
+  },
+  "elements": [
+    {
+      "type": "way",
+      "id": 44021742,
+      "tags": {
+        "highway": "secondary"
+      },
+      "geometry": [
+        {
+          "lon": -0.7709553,
+          "lat": 38.1365085
+        },
+        {
+          "lon": -0.7685169,
+          "lat": 38.1369238
+        }
+      ]
+    },
+    {
+      "type": "way",
+      "id": 64946880,
+      "tags": {
+        "highway": "unclassified"
+      },
+      "geometry": [
+        {
+          "lon": -0.7469116,
+          "lat": 38.1294021
+        },
+        {
+          "lon": -0.745782,
+          "lat": 38.1275909
+        }
+      ]
+    },
+    {
+      "type": "way",
+      "id": 693923742,
+      "tags": {
+        "building": "yes"
+      },
+      "geometry": [
+        {
+          "lon": -0.7734934,
+          "lat": 38.1340336
+        },
+        {
+          "lon": -0.7732673,
+          "lat": 38.1335529
+        },
+        {
+          "lon": -0.7740466,
+          "lat": 38.1333606
+        },
+        {
+          "lon": -0.7734934,
+          "lat": 38.1340336
+        }
+      ]
+    }
+  ]
+}
