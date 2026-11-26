@@ -59,9 +59,12 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --python 3.12
       - run: uv run --no-sync python scripts/benchmark_export.py --size 512 2048 --repeats 2 --output export-benchmark.json
+      - run: uv run --no-sync python scripts/benchmark_polygonization.py --size 8192 --pattern islands holes --verify --output polygonization-benchmark.json
       - uses: actions/upload-artifact@v4
         with:
           name: export-benchmark-${{ matrix.os }}
-          path: export-benchmark.json
+          path: |
+            export-benchmark.json
+            polygonization-benchmark.json
           if-no-files-found: error
           retention-days: 14

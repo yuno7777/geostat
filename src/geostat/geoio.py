@@ -241,11 +241,15 @@ def _water_polygons(
         if int(value) != 1:
             continue
         g = shape(geom)
-        if not g.is_valid and repair_invalid:
+        if not g.is_valid:
+            if not repair_invalid:
+                raise GeoError("polygonization produced an invalid geometry")
             fixed = make_valid(g)
             parts = [p for p in getattr(fixed, "geoms", (fixed,)) if isinstance(p, Polygon)]
             g = MultiPolygon(parts) if len(parts) > 1 else parts[0] if parts else Polygon()
-        if g.is_empty or not g.is_valid:
+            if not g.is_valid:
+                raise GeoError("polygonization produced an invalid geometry")
+        if g.is_empty:
             raise GeoError("polygonization produced an invalid geometry")
         yield g
 
@@ -257,19 +261,15 @@ def write_water_geojson(wet_raster: Path, path: Path) -> int:
             raise GeoError("water polygon export requires a raster CRS")
         band = rasterio.band(source, 1)
         shapes = features.shapes(band, mask=band, transform=source.transform, connectivity=4)
+        crs = str(source.crs)
+        encoder = json.JSONEncoder(ensure_ascii=False, allow_nan=False, separators=(",", ":"))
         output.write('{"type":"FeatureCollection","features":[')
         count = 0
         for geometry in _water_polygons(shapes):
-            for piece in polygons_wgs84(geometry, str(source.crs)):
+            for piece in polygons_wgs84(geometry, crs):
                 if count:
                     output.write(",")
-                json.dump(
-                    geometry_feature(piece, {"flood": 1}),
-                    output,
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    separators=(",", ":"),
-                )
+                output.write(encoder.encode(geometry_feature(piece, {"flood": 1})))
                 count += 1
         output.write("]}")
         return count

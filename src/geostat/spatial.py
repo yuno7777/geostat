@@ -117,11 +117,19 @@ def bounds_wgs84(bounds: BBox, crs: str) -> BBox:
     return west, south, east, north
 
 
-def polygons_wgs84(geom: BaseGeometry, crs: str) -> Iterator[BaseGeometry]:
-    """Transform raster polygons and cut any antimeridian crossings for GeoJSON."""
+@lru_cache(maxsize=32)
+def _polygon_transform(crs: str) -> Transformer | None:
     converter = _to_wgs84(crs)
     source = converter.source_crs
-    if source is None or not source.equals(WGS84, ignore_axis_order=True):
+    if source is not None and source.equals(WGS84, ignore_axis_order=True):
+        return None
+    return converter
+
+
+def polygons_wgs84(geom: BaseGeometry, crs: str) -> Iterator[BaseGeometry]:
+    """Transform raster polygons and cut any antimeridian crossings for GeoJSON."""
+    converter = _polygon_transform(crs)
+    if converter is not None:
         minx, miny, maxx, maxy = geom.bounds
         geom = segmentize(geom, max(maxx - minx, maxy - miny) / 32)
 
@@ -134,6 +142,12 @@ def polygons_wgs84(geom: BaseGeometry, crs: str) -> Iterator[BaseGeometry]:
         if not isinstance(part, Polygon):
             continue
         coords = _coordinates(part)
+        west, _, east, _ = part.bounds
+        if -180 <= west <= east < 180 and east - west < 180:
+            if not part.is_valid:
+                raise ValueError("flood polygon is invalid or too wide for a local scene overlay")
+            yield orient_polygons(part)
+            continue
         center = float((coords[0, 0] + 180) % 360 - 180)
         local = _around(part, center)
         minx, _, maxx, _ = local.bounds
