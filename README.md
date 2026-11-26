@@ -89,8 +89,9 @@ has its own GDAL cache. Progress is printed to stderr. The optional JSON summary
 records completed, reused, failed, and pending scenes in selection order.
 
 Run the same command again to resume. A scene reuses its latest completed
-analysis when its input fingerprint matches and all three product files exist
-and are nonempty. The fingerprint covers the scene files and GDAL sidecars,
+analysis when its input fingerprint matches and all three product files pass the SHA-256
+and size checks recorded in the run’s `artifacts.json`. A missing checksum
+manifest or changed product triggers a fresh export. The fingerprint covers the scene files and GDAL sidecars,
 checkpoint, tile size, threshold, source files, and runtime versions. Use
 `--force` to recompute. A retry is an additional attempt for one failed scene.
 
@@ -135,7 +136,7 @@ Run this command from the checkout on Windows or Linux.
 uv run --locked python scripts/benchmark_export.py --output export-benchmark.json
 ```
 
-The benchmark runs the production exporter in a fresh process for each sample. It compares a connected scene with nodata holes against a scene with thousands of disconnected wet patches. Each report includes elapsed time, peak resident process memory, sampled staging bytes, and final product sizes. The exporter is measured in three stages covering prediction and scratch raster writes, COG creation, and polygonization with GeoJSON export.
+The benchmark runs the production exporter in a fresh process for each sample. It compares a connected scene with nodata holes against a scene with thousands of disconnected wet patches. Each report includes elapsed time, peak resident process memory, sampled staging bytes, and final product sizes. The exporter reports prediction and scratch raster writes, COG creation, polygonization with GeoJSON export, and artifact checksums separately.
 
 Stage memory is sampled every 20 ms and includes memory retained from earlier stages. Staging bytes count the logical sizes of files in the export and GDAL temporary directories, including finished products until publication. Short-lived peaks between samples can be missed. CI uploads the JSON reports for both platforms and runs 512 and 2,048 pixel scenes. The local command also runs 4,096 pixel scenes.
 
@@ -157,6 +158,16 @@ serialization. The optimized run used 185 MiB peak RSS and matched every source
 pixel. The connected pattern with 65,536 holes took 3.24 seconds and used
 324 MiB peak RSS on the same host. CI uploads the raw reports for both platforms.
 
+## Workstation diagnostics
+
+Run `uv run geostat doctor` on Windows or Linux. Add `--json` for automation.
+The command exercises CPU tensor arithmetic, reports CUDA availability, and
+writes and reopens a temporary GDAL COG. It probes writable storage, reports
+available space, checks SQLite access, and validates the installed frontend and
+example configs. Fresh installations can pass before running `geostat init-db`.
+The probe removes its temporary files and opens an existing registry read-only.
+Exit status 1 means at least one check failed.
+
 ## Checks
 
 ```bash
@@ -166,7 +177,7 @@ uv run --locked --extra dev mypy
 uv run --locked --extra dev pytest
 ```
 
-CI runs these checks plus a CLI smoke test on Python 3.12 and 3.13 on Windows and Linux for pushes and pull requests. The test suite builds synthetic rasters and a temporary SQLite registry.
+CI runs these checks and exercises the installed wheel’s CLI and API outside the checkout on Python 3.12 and 3.13 on Windows and Linux. The test suite builds synthetic rasters and a temporary SQLite registry.
 
 ### Real-data smoke test
 

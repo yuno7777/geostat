@@ -27,6 +27,28 @@ jobs:
       - run: uv run --no-sync geostat --help
       - run: uv run --no-sync python scripts/benchmark_spatial.py --worker raster-windowed --size small
 
+      - name: Install the project wheel
+        run: uv sync --locked --extra dev --no-editable --python ${{ matrix.python }}
+      - name: Check the installed CLI outside the checkout
+        working-directory: ${{ runner.temp }}
+        env:
+          GEOSTAT_DATA_DIR: ${{ runner.temp }}/GeoStat wheel data
+          GEOSTAT_ARTIFACTS_DIR: ${{ runner.temp }}/GeoStat wheel artifacts
+        run: uv run --project "${{ github.workspace }}" --no-sync geostat doctor --json
+      - name: Check the installed API and packaged frontend
+        working-directory: ${{ runner.temp }}
+        env:
+          GEOSTAT_DATA_DIR: ${{ runner.temp }}/GeoStat wheel data
+          GEOSTAT_ARTIFACTS_DIR: ${{ runner.temp }}/GeoStat wheel artifacts
+        run: >-
+          uv run --project "${{ github.workspace }}" --no-sync python -c
+          "from geostat import settings; from geostat.api import create_app;
+          from fastapi.testclient import TestClient;
+          assert settings.FRONTEND_DIR == settings.PKG_DIR / 'frontend';
+          client = TestClient(create_app());
+          assert client.get('/api/health').json()['ok'];
+          assert client.get('/').status_code == 200"
+
   real-data-smoke:
     runs-on: ${{ matrix.os }}
     strategy:

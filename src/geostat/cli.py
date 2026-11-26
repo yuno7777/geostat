@@ -9,9 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from geostat import db, geoio, settings
+from geostat import db, settings
 from geostat.settings import ARTIFACTS_DIR, CONFIGS_DIR, DB_PATH, ensure_dirs
-from geostat.spatial import bounds_wgs84
 
 
 def _add_date() -> None:
@@ -37,6 +36,20 @@ def cmd_env(_: argparse.Namespace) -> int:
     }
     print(json.dumps(out, indent=2, sort_keys=True))
     return 0
+
+
+def cmd_doctor(ns: argparse.Namespace) -> int:
+    from geostat.doctor import check_workstation
+
+    checks = check_workstation()
+    ok = all(check.ok for check in checks)
+    if ns.json:
+        print(json.dumps({"ok": ok, "checks": [asdict(check) for check in checks]}, indent=2))
+    else:
+        for check in checks:
+            state = "OK" if check.ok else "FAIL"
+            print(f"[{state}] {check.name}: {check.detail}")
+    return 0 if ok else 1
 
 
 def cmd_init_db(_: argparse.Namespace) -> int:
@@ -86,6 +99,8 @@ def cmd_ingest(ns: argparse.Namespace) -> int:
 
 
 def cmd_validate(ns: argparse.Namespace) -> int:
+    from geostat import geoio
+
     conn = db.connect()
     ensure_dirs()
     scene = db.get_scene(conn, ns.scene)
@@ -120,7 +135,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def cmd_manifest(ns: argparse.Namespace) -> int:
-    from geostat import tiling
+    from geostat import geoio, tiling
     from geostat.provenance import code_revision
 
     cfg = tiling.TilingConfig.from_json(Path(ns.config))
@@ -148,7 +163,7 @@ def cmd_manifest(ns: argparse.Namespace) -> int:
 
 
 def cmd_baseline(ns: argparse.Namespace) -> int:
-    from geostat import baseline
+    from geostat import baseline, geoio
 
     conn = db.connect()
     manifest_path = Path(ns.manifest)
@@ -202,7 +217,7 @@ def settings_runs_dir() -> Path:
 
 
 def tiling_manifest_sha(path: Path) -> str:
-    from geostat import tiling
+    from geostat import geoio, tiling
 
     return tiling.manifest_sha256(geoio.load_json(path))
 
@@ -235,6 +250,8 @@ def test_config_json(cfg: dict[str, Any]) -> str:
 
 
 def load_config(path: Path) -> dict[str, Any]:
+    from geostat import geoio
+
     config = geoio.load_json(path)
     if not isinstance(config, dict):
         raise ValueError(f"configuration must be a JSON object: {path}")
@@ -242,7 +259,7 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def cmd_eval(ns: argparse.Namespace) -> int:
-    from geostat import train
+    from geostat import geoio, train
 
     conn = db.connect()
     row = db.get_run(conn, ns.run)
@@ -327,6 +344,7 @@ def cmd_analyze(ns: argparse.Namespace) -> int:
 
 
 def cmd_analyze_batch(ns: argparse.Namespace) -> int:
+    from geostat import geoio
     from geostat.batch import BatchModel, analyze_batch
     from geostat.inference import _validate_options
     from geostat.provenance import sha256_hex
@@ -367,7 +385,8 @@ def cmd_analyze_batch(ns: argparse.Namespace) -> int:
 
 
 def cmd_exposure(ns: argparse.Namespace) -> int:
-    from geostat import exposure
+    from geostat import exposure, geoio
+    from geostat.spatial import bounds_wgs84
 
     conn = db.connect()
     analyze = db.latest_run_kind(conn, "analyze", scene_id=ns.scene)
@@ -453,6 +472,12 @@ def main(argv: list[str] | None = None) -> int:
 
     env = sub.add_parser("env", help="print environment + code revision + db path")
     env.set_defaults(func=cmd_env)
+
+    doctor = sub.add_parser(
+        "doctor", help="check the local runtime, GDAL, storage, and package assets"
+    )
+    doctor.add_argument("--json", action="store_true", help="output machine-readable diagnostics")
+    doctor.set_defaults(func=cmd_doctor)
 
     init = sub.add_parser("init-db", help="create/migrate SQLite schema")
     init.set_defaults(func=cmd_init_db)
