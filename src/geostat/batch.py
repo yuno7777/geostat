@@ -14,10 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from geostat import db, settings
+from geostat import db, integrity, settings
 from geostat.provenance import sha256_hex
-
-PRODUCTS = ("prob_cog", "mask_cog", "flood_geojson")
 
 
 @dataclass(frozen=True)
@@ -80,12 +78,15 @@ def _fingerprint(scene: str, model: BatchModel) -> str:
 
 
 def _reusable(row: sqlite3.Row, fingerprint: str) -> bool:
-    if json.loads(row["config_json"] or "{}").get("input_fingerprint") != fingerprint:
+    try:
+        config = json.loads(row["config_json"] or "{}")
+        paths = json.loads(row["artifact_paths_json"] or "{}")
+    except (ValueError, TypeError):
         return False
-    paths = json.loads(row["artifact_paths_json"] or "{}")
-    return all(
-        role in paths and Path(paths[role]).is_file() and Path(paths[role]).stat().st_size > 0
-        for role in PRODUCTS
+    return (
+        isinstance(config, dict)
+        and config.get("input_fingerprint") == fingerprint
+        and integrity.verify_manifest(paths)
     )
 
 

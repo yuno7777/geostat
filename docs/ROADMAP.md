@@ -19,7 +19,7 @@ a held-out evaluation verifies their assumptions and limitations.
 - [x] Stress-test large fragmented masks, verify connectivity and hole counts, and reduce per-feature GeoJSON export overhead.
 - [ ] Revisit tiled stitching if larger masks exceed practical memory budgets on analyst hardware.
 - [x] Add resumable `analyze-batch` with bounded concurrency, progress, cancellation and input fingerprinting.
-- [ ] Record artifact hashes and add `geostat doctor` for GDAL drivers, CPU/GPU and storage checks.
+- [x] Record flood product hashes, verify them on batch resume, and add `geostat doctor` for GDAL, CPU/GPU, registry, storage, and installed assets.
 
 ## Milestone 2 · Scientific validity and inputs
 
@@ -39,7 +39,8 @@ a held-out evaluation verifies their assumptions and limitations.
 
 ## Milestone 4 · Releases and operation
 
-- [ ] Build and test installed wheels on both platforms and publish tagged versions with checksums. Verify GPU installation separately.
+- [x] Test installed wheels on Windows and Linux.
+- [ ] Publish tagged wheel releases with checksums and verify a GPU installation separately.
 - [ ] Record per-stage timing and memory, tile throughput, cache hits and diagnostic events keyed by scene and run.
 - [ ] Add performance regression gates tied to runner class and output equivalence.
 - [ ] Document native workstation installs, headless Linux scheduled execution, and an optional standardized container.

@@ -15,7 +15,7 @@ from rasterio.shutil import copy as copy_raster
 from rasterio.windows import Window
 
 import geostat.settings as settings
-from geostat import geoio, metrics
+from geostat import geoio, integrity, metrics
 from geostat.dataset import normalize_db
 from geostat.settings import DATASET_NAME, DATASET_VERSION, RAW_DIR
 from geostat.unet import DOWNSAMPLE_FACTOR, SmallUNet
@@ -136,6 +136,8 @@ def export_scene_flood(
     prob_path = out_dir / f"flood_prob_{scene}.tif"
     mask_path = out_dir / f"flood_mask_{scene}.tif"
     geojson_path = out_dir / f"flood_{scene}.geojson"
+    manifest_path = out_dir / integrity.MANIFEST_NAME
+    flood_products = {"prob_cog": prob_path, "mask_cog": mask_path, "flood_geojson": geojson_path}
     n_valid = n_water = tiles = 0
     counts = dict.fromkeys(("tp", "fp", "fn", "tn", "n_valid"), 0)
     label_path = _scene_path(scene, "Label")
@@ -213,6 +215,11 @@ def export_scene_flood(
                 )
         with stage("polygonize"):
             polygon_count = geoio.write_water_geojson(raw_wet, products / geojson_path.name)
+        with stage("checksums"):
+            integrity.write_manifest(
+                products / manifest_path.name,
+                {role: products / path.name for role, path in flood_products.items()},
+            )
         products.replace(out_dir)
 
     result: dict[str, Any] = {
@@ -224,6 +231,7 @@ def export_scene_flood(
         "prob_cog": str(prob_path),
         "mask_cog": str(mask_path),
         "geojson": str(geojson_path),
+        "artifact_manifest": str(manifest_path),
         "stats": _scene_stats(meta, scene, tile_size, tiles, n_valid),
         "nan_masked_prob_is_nan_outside_valid": True,
         "polys": polygon_count,
@@ -238,10 +246,14 @@ def export_scene_flood(
                 f"scene {scene} vs reference: iou={comp['iou']:.4f} f1={comp['f1']:.4f} "
                 f"prec={comp['precision']:.4f} recall={comp['recall']:.4f} n={comp['n_valid']}"
             )
-    run.add_artifact("prob_cog", prob_path)
-    run.add_artifact("mask_cog", mask_path)
-    run.add_artifact("flood_geojson", geojson_path)
+    for role, path in flood_products.items():
+        run.add_artifact(role, path)
+    run.add_artifact(integrity.MANIFEST_ROLE, manifest_path)
     run.set_metrics(
-        {k: v for k, v in result.items() if k not in ("prob_cog", "mask_cog", "geojson", "stats")}
+        {
+            k: v
+            for k, v in result.items()
+            if k not in ("prob_cog", "mask_cog", "geojson", "artifact_manifest", "stats")
+        }
     )
     return result

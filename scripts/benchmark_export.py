@@ -163,7 +163,8 @@ def trial(side: int, pattern: str) -> dict[str, Any]:
             "polygons": result["polys"],
             "valid_pixels": result["n_valid_px"],
             "product_bytes": sum(
-                Path(result[k]).stat().st_size for k in ("prob_cog", "mask_cog", "geojson")
+                Path(result[k]).stat().st_size
+                for k in ("prob_cog", "mask_cog", "geojson", "artifact_manifest")
             ),
         }
 

@@ -15,7 +15,7 @@ from geostat import batch, db, settings
 from geostat.unet import SmallUNet
 
 
-def test_batch_cli_resumes_repairs_and_retries(tmp_path, synthetic_raster_pair):
+def test_batch_cli_resumes_rejects_corruption_and_retries(tmp_path, synthetic_raster_pair):
     data = tmp_path / "scene store"
     artifacts = tmp_path / "output store"
     raw = data / "raw" / settings.DATASET_NAME / settings.DATASET_VERSION
@@ -102,7 +102,10 @@ def test_batch_cli_resumes_repairs_and_retries(tmp_path, synthetic_raster_pair):
         raster.write(pixel, 1)
     alpha_old = initial["Alpha_1"]["run_id"]
     beta_old = initial["Beta_2"]["run_id"]
-    (artifacts / "runs" / beta_old / "flood_Beta_2.geojson").unlink()
+    corrupted = artifacts / "runs" / beta_old / "flood_Beta_2.geojson"
+    original = corrupted.read_bytes()
+    corrupted.write_bytes(b"X" + original[1:])
+    assert corrupted.stat().st_size == len(original)
     third, updated = invoke("--scene", "Alpha_1", "--scene", "Beta_2", "--jobs", "2")
     assert third.returncode == 0, third.stdout + third.stderr
     assert [item["status"] for item in updated.values()] == ["completed", "completed"]
