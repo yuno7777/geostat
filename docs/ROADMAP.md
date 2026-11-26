@@ -17,7 +17,7 @@ a held-out evaluation verifies their assumptions and limitations.
 - [x] Stream GeoJSON features from the complete on-disk wet mask and check connectivity and holes across tile boundaries.
 - [x] Add repeatable benchmarks for export time, process memory, and staging bytes by stage, with reports from Windows and Linux CI.
 - [ ] Evaluate tiled polygon stitching on larger, highly fragmented scenes using the benchmark reports.
-- [ ] Add resumable `analyze-batch` with bounded concurrency, progress, cancellation and input fingerprinting.
+- [x] Add resumable `analyze-batch` with bounded concurrency, progress, cancellation and input fingerprinting.
 - [ ] Record artifact hashes and add `geostat doctor` for GDAL drivers, CPU/GPU and storage checks.
 
 ## Milestone 2 · Scientific validity and inputs
