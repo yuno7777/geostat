@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -121,6 +121,7 @@ def export_scene_flood(
     threshold: float = 0.5,
     tile_size: int = 256,
     make_label_comparison: bool = True,
+    _profile_stage: Callable[[str, Path], AbstractContextManager[None]] | None = None,
 ) -> dict[str, Any]:
     """Write and publish scene products without holding whole-scene arrays."""
     _validate_options(tile_size, threshold)
@@ -144,10 +145,15 @@ def export_scene_flood(
         TemporaryDirectory(prefix=".geostat-export-", dir=root) as scratch,
     ):
         work = Path(scratch)
+
+        def stage(name: str) -> AbstractContextManager[None]:
+            return _profile_stage(name, work) if _profile_stage is not None else nullcontext()
+
         products = work / "products"
         products.mkdir()
         raw_prob, raw_mask, raw_wet = (work / name for name in ("prob.tif", "mask.tif", "wet.tif"))
         with ExitStack() as stack:
+            stack.enter_context(stage("predict"))
             source = stack.enter_context(rasterio.open(_scene_path(scene, "S1")))
             meta = geoio.raster_meta(source)
             labels = stack.enter_context(rasterio.open(label_path)) if have_labels else None
@@ -195,16 +201,18 @@ def export_scene_flood(
                         wet, lab == 1, usable & np.isin(lab, (0, 1))
                     ).items():
                         counts[key] += value
-        for raw, destination in ((raw_prob, prob_path), (raw_mask, mask_path)):
-            copy_raster(
-                raw,
-                products / destination.name,
-                driver="COG",
-                compress="DEFLATE",
-                blocksize=512,
-                BIGTIFF="IF_SAFER",
-            )
-        polygon_count = geoio.write_water_geojson(raw_wet, products / geojson_path.name)
+        with stage("cog"):
+            for raw, destination in ((raw_prob, prob_path), (raw_mask, mask_path)):
+                copy_raster(
+                    raw,
+                    products / destination.name,
+                    driver="COG",
+                    compress="DEFLATE",
+                    blocksize=512,
+                    BIGTIFF="IF_SAFER",
+                )
+        with stage("polygonize"):
+            polygon_count = geoio.write_water_geojson(raw_wet, products / geojson_path.name)
         products.replace(out_dir)
 
     result: dict[str, Any] = {

@@ -102,6 +102,18 @@ Measured on AMD EPYC 7763, Linux x86-64, Python 3.12.14, NumPy 2.2.6, Rasterio 1
 
 Both raster scan methods returned a nodata fraction of 0.125 at all three sizes. See [the original experiments](docs/EXPERIMENTS_AND_BENCHMARKS.md) for historical model training and evaluation results.
 
+### Export stage benchmarks
+
+Run this command from the checkout on Windows or Linux.
+
+```bash
+uv run --locked python scripts/benchmark_export.py --output export-benchmark.json
+```
+
+The benchmark runs the production exporter in a fresh process for each sample. It compares a connected scene with nodata holes against a scene with thousands of disconnected wet patches. Each report includes elapsed time, peak resident process memory, sampled staging bytes, and final product sizes. The exporter is measured in three stages covering prediction and scratch raster writes, COG creation, and polygonization with GeoJSON export.
+
+Stage memory is sampled every 20 ms and includes memory retained from earlier stages. Staging bytes count the logical sizes of files in the export and GDAL temporary directories, including finished products until publication. Short-lived peaks between samples can be missed. CI uploads the JSON reports for both platforms and runs 512 and 2,048 pixel scenes. The local command also runs 4,096 pixel scenes.
+
 ## Checks
 
 ```bash

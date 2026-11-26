@@ -15,7 +15,8 @@ a held-out evaluation verifies their assumptions and limitations.
 - [x] Add Windows and Linux jobs for Python 3.12 and 3.13 and exercise temporary paths with spaces and Unicode.
 - [x] Write inference COGs from tiled scratch rasters and accumulate reference metrics by window. Retain the in-memory Python API.
 - [x] Stream GeoJSON features from the complete on-disk wet mask and check connectivity and holes across tile boundaries.
-- [ ] Benchmark peak memory and temporary disk by stage on both platforms. Evaluate tiled polygon stitching if the complete-mask polygonizer dominates memory.
+- [x] Add repeatable benchmarks for export time, process memory, and staging bytes by stage, with reports from Windows and Linux CI.
+- [ ] Evaluate tiled polygon stitching on larger, highly fragmented scenes using the benchmark reports.
 - [ ] Add resumable `analyze-batch` with bounded concurrency, progress, cancellation and input fingerprinting.
 - [ ] Record artifact hashes and add `geostat doctor` for GDAL drivers, CPU/GPU and storage checks.
 
