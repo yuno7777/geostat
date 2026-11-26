@@ -172,3 +172,23 @@ def test_disk_polygonization_preserves_seams_holes_and_connectivity(tmp_path):
     geoms = [shape(feature["geometry"]) for feature in geoio.load_json(output)["features"]]
     assert sorted(len(g.interiors) for g in geoms) == [0, 1]
     np.testing.assert_array_equal(rasterize(geoms, out_shape=wet.shape, transform=transform), wet)
+
+
+def test_streamed_geojson_roundtrip_across_antimeridian(tmp_path):
+    from rasterio.features import rasterize
+    from shapely.affinity import translate
+    from shapely.geometry import shape
+
+    mask = np.ones((8, 8), dtype=np.uint8)
+    mask[2:6, 3:5] = 0
+    transform = rasterio.Affine(0.01, 0, 179.96, 0, -0.01, 2)
+    source, output = tmp_path / "dateline.tif", tmp_path / "flood.geojson"
+    geoio.write_raster(source, mask, tuple(transform), "EPSG:4326", nodata=0, driver="GTiff")
+
+    assert geoio.write_water_geojson(source, output) == 2
+    features = geoio.load_json(output)["features"]
+    geometries = [shape(f["geometry"]) for f in features]
+    assert all(g.is_valid and -180 <= g.bounds[0] < g.bounds[2] <= 180 for g in geometries)
+    local = [translate(g, xoff=360) if g.bounds[2] < 0 else g for g in geometries]
+    restored = rasterize(local, out_shape=mask.shape, transform=transform, dtype="uint8")
+    np.testing.assert_array_equal(restored, mask)

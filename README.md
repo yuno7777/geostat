@@ -139,6 +139,24 @@ The benchmark runs the production exporter in a fresh process for each sample. I
 
 Stage memory is sampled every 20 ms and includes memory retained from earlier stages. Staging bytes count the logical sizes of files in the export and GDAL temporary directories, including finished products until publication. Short-lived peaks between samples can be missed. CI uploads the JSON reports for both platforms and runs 512 and 2,048 pixel scenes. The local command also runs 4,096 pixel scenes.
 
+### Polygonization stress test
+
+Run the extraction-only and complete GeoJSON benchmarks in separate processes
+on Windows or Linux. The optional verification rasterizes the GeoJSON back to
+the original pixel grid and checks the expected feature and hole counts.
+Verification runs after the timed export and the peak memory reading.
+
+```bash
+uv run --locked python scripts/benchmark_polygonization.py --size 4096 8192 --verify --output polygonization-benchmark.json
+```
+
+One Linux x86-64 trial with GDAL 3.10.3 on an AMD EPYC 9V74 exported an
+8,192 × 8,192 raster with 65,536 islands in 5.45 seconds, compared with 16.76
+seconds before caching the CRS check and streamlining feature conversion and
+serialization. The optimized run used 185 MiB peak RSS and matched every source
+pixel. The connected pattern with 65,536 holes took 3.24 seconds and used
+324 MiB peak RSS on the same host. CI uploads the raw reports for both platforms.
+
 ## Checks
 
 ```bash
